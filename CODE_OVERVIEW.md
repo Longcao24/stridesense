@@ -72,8 +72,8 @@ Core idea: **the phone side is a self-contained web tool (zero dependencies)**; 
 
 | File | Content |
 |------|------|
-| `README.md` | The demo's user/algorithm documentation (Chinese) |
-| `HOW_TO_RUN.md` | How to run it (demo + generating figures/PPT) |
+| `README.md` | The demo's user guide & reconstruction algorithm |
+| `HOW_TO_RUN.md` | How to run the demo (open the English UI and use it) |
 | `CODE_OVERVIEW.md` | This file |
 | `DEMO_SCRIPT.md` | Live demo script / talk track / contingency plan |
 | `StrideSense_Self_Reflection.md` | Post-pitch self-review |
