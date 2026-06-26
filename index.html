@@ -1,0 +1,1075 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>手机轨迹复现器 · Phone Motion Tracker</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#141a24; --panel2:#1b2330; --line:#2a3445;
+    --txt:#e6edf3; --dim:#8b98a9; --accent:#4cc2ff; --good:#3fb950; --warn:#e3b341; --bad:#f85149;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0; background:var(--bg); color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;}
+  body{padding:10px 10px 60px; max-width:760px; margin:0 auto;}
+  h1{font-size:17px; margin:4px 0 2px; font-weight:600;}
+  .sub{font-size:12px; color:var(--dim); margin-bottom:10px;}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; margin-bottom:10px;}
+  .row{display:flex; gap:8px; flex-wrap:wrap; align-items:center;}
+  button{appearance:none; border:1px solid var(--line); background:var(--panel2); color:var(--txt);
+    font-size:14px; padding:11px 14px; border-radius:10px; flex:1 1 auto; min-width:84px; cursor:pointer;
+    transition:.12s; font-weight:500;}
+  button:active{transform:scale(.97);}
+  button.primary{background:var(--accent); color:#06202e; border-color:var(--accent); font-weight:700;}
+  button.good{background:var(--good); color:#04210d; border-color:var(--good);}
+  button.bad{background:transparent; color:var(--bad); border-color:#5a2a2a;}
+  button:disabled{opacity:.4; pointer-events:none;}
+  button.toggle.on{background:var(--accent); color:#06202e; border-color:var(--accent);}
+  .modeBtn.on{background:var(--accent); color:#06202e; border-color:var(--accent); font-weight:700;}
+  .gaitgrid{display:grid; grid-template-columns:auto 1fr; gap:3px 12px; font-size:12.5px; align-items:baseline; font-variant-numeric:tabular-nums;}
+  .gaitgrid .gh{grid-column:1/-1; font-size:11px; color:var(--accent); margin-top:7px; font-weight:600;}
+  .status{font-size:12px; line-height:1.7; color:var(--dim);}
+  .status b{color:var(--txt); font-weight:600;}
+  .dot{display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:4px; vertical-align:middle;}
+  .dot.ok{background:var(--good);} .dot.no{background:var(--bad);} .dot.warn{background:var(--warn);}
+  canvas{width:100%; display:block; background:var(--panel2); border-radius:10px; border:1px solid var(--line); touch-action:none;}
+  .canvas-label{font-size:11px; color:var(--dim); margin:0 0 4px 2px; display:flex; justify-content:space-between;}
+  .grid2{display:grid; grid-template-columns:1fr; gap:10px;}
+  @media(min-width:560px){.grid2{grid-template-columns:1fr 1fr;}}
+  .slider{margin:8px 0;}
+  .slider label{font-size:12px; color:var(--dim); display:flex; justify-content:space-between; margin-bottom:2px;}
+  .slider label b{color:var(--accent); font-variant-numeric:tabular-nums;}
+  input[type=range]{width:100%; accent-color:var(--accent);}
+  .readout{font-size:11px; font-variant-numeric:tabular-nums; color:var(--dim); line-height:1.6;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre; overflow-x:auto;}
+  .seg{display:flex; gap:4px;}
+  .seg button{flex:1; padding:8px; font-size:13px;}
+  details summary{font-size:13px; color:var(--accent); cursor:pointer; padding:4px 0;}
+  .hint{font-size:11.5px; color:var(--dim); line-height:1.6;}
+  .big-banner{font-size:13px; padding:10px; border-radius:10px; background:#1a2030; border:1px solid var(--line); margin-bottom:8px;}
+</style>
+</head>
+<body>
+
+<h1>📱 手机轨迹复现器</h1>
+<div class="sub">用陀螺仪 + 加速度计实时复现「旋转姿态」与「空中画圈轨迹」 · 单文件 · 无依赖</div>
+
+<div class="card" id="permCard">
+  <div class="big-banner" id="secWarn" style="display:none; color:var(--warn);">
+    ⚠️ 当前不是安全上下文(HTTPS / localhost)。iOS 不会弹出传感器授权,请用 README 里的 HTTPS 方式打开。
+  </div>
+  <div class="row">
+    <button class="primary" id="btnPermit">① 授权并启动传感器</button>
+  </div>
+  <div class="status" id="permStatus" style="margin-top:8px;"></div>
+</div>
+
+<div class="card">
+  <div class="seg" style="margin-bottom:8px;">
+    <button id="modeGesture" class="modeBtn on">✍️ 手势模式</button>
+    <button id="modeWalk" class="modeBtn">🚶 步行模式 PDR</button>
+  </div>
+  <div class="row">
+    <button id="btnCalib">② 校准(静置)</button>
+    <button class="good gesture-only" id="btnRec" disabled>③ 开始录制</button>
+    <button class="gesture-only" id="btnReplay" disabled>▶ 回放</button>
+    <button class="good walk-only" id="btnWalk" disabled style="display:none;">▶ 开始步行追踪</button>
+    <button class="bad" id="btnClear">清空</button>
+  </div>
+  <div class="status" id="recStatus" style="margin-top:8px;">未校准。请把手机平放静置后点「校准」。</div>
+</div>
+
+<div class="grid2">
+  <div class="card" style="margin:0;">
+    <div class="canvas-label"><span>🧭 姿态 / 旋转(可靠)</span><span id="oriReadout">α — β — γ —</span></div>
+    <canvas id="cubeCanvas" width="360" height="300"></canvas>
+  </div>
+  <div class="card" style="margin:0;">
+    <div class="canvas-label">
+      <span id="pathTitle">✍️ 空间轨迹(短手势)</span>
+      <span class="seg" style="gap:3px;">
+        <button data-plane="3D" class="planeBtn on" style="padding:3px 7px;min-width:0;flex:0;">3D</button>
+        <button data-plane="XY" class="planeBtn" style="padding:3px 7px;min-width:0;flex:0;">XY</button>
+        <button data-plane="XZ" class="planeBtn" style="padding:3px 7px;min-width:0;flex:0;">XZ</button>
+        <button data-plane="YZ" class="planeBtn" style="padding:3px 7px;min-width:0;flex:0;">YZ</button>
+      </span>
+    </div>
+    <canvas id="pathCanvas" width="360" height="300"></canvas>
+  </div>
+</div>
+
+<div class="card">
+  <div class="readout" id="liveReadout">等待传感器数据…</div>
+</div>
+
+<details class="card gesture-only" open>
+  <summary>⚙️ 轨迹重建参数(画圈不准就调这里)</summary>
+  <div class="hint" style="margin:6px 0 10px;">
+    停止录制后会对整段数据做<b>边界约束重建</b>(假设手势<b>首尾静止</b>,消掉重力残差与漂移),
+    这是轨迹能成形的关键。要点:<b>开始前静置一下 → 画(2~4秒)→ 末尾再静置一下</b>再停。
+    画圈勾「闭合手势」。参数改完会自动重算,不满意点「↻ 重建」即可,不用重画。
+  </div>
+  <div style="font-size:12px;color:var(--accent);margin:2px 0 4px;">▸ 重建参数(改完自动重算,不用重画手势)</div>
+  <div class="slider">
+    <label>平滑窗口 smooth(降噪) <b id="vSmooth">2</b></label>
+    <input type="range" id="sSmooth" min="0" max="8" step="1" value="2">
+  </div>
+  <div class="row" style="gap:14px;margin:8px 2px 4px;">
+    <label class="hint" style="flex:1;display:flex;align-items:center;gap:6px;">
+      <input type="checkbox" id="cbDetrend" checked style="width:18px;height:18px;"> 首尾静止去漂(强烈建议)</label>
+    <label class="hint" style="flex:1;display:flex;align-items:center;gap:6px;">
+      <input type="checkbox" id="cbClosed" style="width:18px;height:18px;"> 闭合手势(画圈)</label>
+  </div>
+  <div class="row" style="margin-top:4px;">
+    <button id="btnRebuild" class="primary" disabled>↻ 用当前参数重建</button>
+  </div>
+
+  <details style="margin-top:8px;">
+    <summary style="font-size:12px;">▸ 实时预览滤波(只影响录制时的粗预览,不影响最终重建)</summary>
+    <div class="slider" style="margin-top:6px;">
+      <label>速度泄漏 leak <b id="vLeak">1.20</b></label>
+      <input type="range" id="sLeak" min="0" max="4" step="0.05" value="1.2">
+    </div>
+    <div class="slider">
+      <label>静止判定 ZUPT(m/s²) <b id="vZupt">0.30</b></label>
+      <input type="range" id="sZupt" min="0.05" max="1.5" step="0.01" value="0.30">
+    </div>
+    <div class="slider">
+      <label>偏置高通 k <b id="vHp">0.020</b></label>
+      <input type="range" id="sHp" min="0" max="0.15" step="0.002" value="0.02">
+    </div>
+  </details>
+
+  <div class="row" style="margin-top:8px;">
+    <button id="btnExport" disabled>⬇ 导出 JSON</button>
+    <button id="btnExportCsv" disabled>⬇ 导出 CSV</button>
+  </div>
+  <div class="row" style="margin-top:6px;">
+    <button id="btnUpload" class="good">⬆ 上传给电脑(让 Claude 分析)</button>
+  </div>
+</details>
+
+<div class="card walk-only" id="walkCard" style="display:none;">
+  <div style="font-size:14px;font-weight:600;margin-bottom:4px;">🚶 步行模式 · 足绑 PDR</div>
+  <div class="hint" style="margin-bottom:8px;">
+    把手机<b>绑在脚背或脚踝</b>(屏幕朝外、绑紧别晃),平放静置点「② 校准」,再点上面「▶ 开始步行追踪」,正常走路。<br>
+    原理:每步<b>落地静止</b>那一刻速度必为 0 → 自动 <b>ZUPT</b> 把这一步累积的漂移清掉,所以能连续走很远不飘。
+    右图俯视就是你走的<b>地面路线</b>,还会数步数、算距离。
+  </div>
+  <div class="row" style="margin-bottom:6px;"><button id="btnWalkClear" class="bad">🧹 清空路径</button></div>
+  <details>
+    <summary style="font-size:12px;">▸ 落地(ZUPT)检测参数 — 检不到步/乱跳时调</summary>
+    <div class="slider" style="margin-top:6px;">
+      <label>加速度偏差阈值 accTh(m/s²) <b id="vWalkAcc">2.00</b></label>
+      <input type="range" id="sWalkAcc" min="0.5" max="5" step="0.1" value="2.0">
+    </div>
+    <div class="slider">
+      <label>陀螺阈值 gyroTh(deg/s) <b id="vWalkGyro">40</b></label>
+      <input type="range" id="sWalkGyro" min="10" max="120" step="5" value="40">
+    </div>
+    <div class="slider">
+      <label>落地确认窗口 N(采样) <b id="vWalkN">4</b></label>
+      <input type="range" id="sWalkN" min="2" max="12" step="1" value="4">
+    </div>
+    <div class="hint">没检测到步 → 调大 accTh / gyroTh;静止时也乱算步 → 调小。</div>
+  </details>
+</div>
+
+<div class="card walk-only" id="gaitCard" style="display:none;">
+  <div style="font-size:14px;font-weight:600;margin-bottom:6px;">📊 步态分析(随走动实时更新)</div>
+  <div id="gaitPanel"><div class="hint">开始步行追踪后,这里显示步频、步速、支撑/摆动相、步态变异性 CV、足倾角等。</div></div>
+  <div class="row" style="margin-top:8px;"><button id="btnWalkUpload" class="good">⬆ 上传步态数据(给 Claude)</button></div>
+</div>
+
+<details class="card">
+  <summary>📖 使用说明 & 原理</summary>
+  <div class="hint" style="margin-top:8px;">
+    <b>旋转/姿态</b>:左图实时跟随手机朝向,几乎不漂移 → 可靠。<br><br>
+    <b>空中画圈</b>:右图把手在空中划过的路径画出来。流程:<br>
+    1. 手机平放静置 → 点「校准重力」(约 1.5 秒,别动)。<br>
+    2. 点「开始录制」。<br>
+    3. 拿起手机在空中画一个圈 / 写个字(2~4 秒内)。<br>
+    4. 点「停止录制」,右图显示轨迹;「回放」可动画重演;「导出」存数据给 Python 分析。<br><br>
+    <b>物理局限(诚实说明)</b>:位置=加速度的二次积分,误差随时间平方累积,超过 ~5–10 秒必漂移。
+    本工具靠「高通去偏置 + 零速更新 ZUPT + 速度泄漏」让短手势<b>形状可辨认</b>,但不是物理精确的厘米级尺度。
+    要厘米级请上视觉/磁/RF 辅助(对应你做的 freehand US 思路)。
+  </div>
+</details>
+
+<script>
+"use strict";
+/* =========================================================================
+   Phone Motion Tracker — pure front-end, zero dependencies
+   Sensors:
+     deviceorientation  -> alpha/beta/gamma  (orientation, reliable)
+     devicemotion       -> accelerationIncludingGravity / acceleration / rotationRate
+   Reconstruction:
+     a_world = R(orientation) * a_device      rotate acceleration into world frame
+     a_lin   = a_world - g_world(from calibration)  remove gravity (constant downward in world frame)
+     high-pass to remove residual bias -> integrate to velocity (ZUPT+leak) -> integrate to position
+   ========================================================================= */
+
+// ---------- Global state ----------
+const S = {
+  hasMotion:false, hasOrient:false,
+  ori:{a:0,b:0,g:0},                 // current Euler angles (degrees)
+  R:[1,0,0, 0,1,0, 0,0,1],           // device->world rotation matrix
+  unitScale:1,                       // normalize acceleration unit to m/s²
+  gWorld:[0,0,0],                    // world-frame gravity vector from calibration (m/s²)
+  calibrated:false, calibrating:false, calibBuf:[],
+  bias:[0,0,0],                      // slow bias estimate for high-pass (world frame)
+  vel:[0,0,0], pos:[0,0,0],
+  stillCount:0,
+  lastT:0, dtEMA:0.016, rateHz:0, nSamp:0,
+  recording:false, buf:[], rawbuf:[], accelSrc:'-', // buf=reconstructed result; rawbuf=raw world-frame linear accel {t,dt,aw,a,b,g}
+  rotRateMag:0,
+  plane:"3D",
+  cam:{az:0.6, el:0.7},              // 3D view azimuth/elevation (drag finger to rotate)
+  mode:'gesture',                    // 'gesture' | 'walk'
+  walk:{ active:false, v:[0,0,0], p:[0,0,0], pLive:[0,0,0], path:[[0,0,0]], swing:[],
+         inStance:true, stanceCount:0, moveCount:0, steps:0, dist:0 },
+  params:{gain:1.0, leak:1.2, zupt:0.30, hp:0.02, smooth:2, detrend:true, closed:false,
+          walkAccTh:2.0, walkGyroTh:40, walkN:4},
+  replay:null,
+};
+
+// ---------- Math ----------
+function matVec(R,v){ // 3x3 row-major * vec3
+  return [ R[0]*v[0]+R[1]*v[1]+R[2]*v[2],
+           R[3]*v[0]+R[4]*v[1]+R[5]*v[2],
+           R[6]*v[0]+R[7]*v[1]+R[8]*v[2] ];
+}
+function mag3(v){ return Math.hypot(v[0],v[1],v[2]); }
+const DEG = Math.PI/180;
+
+// W3C deviceorientation (alpha=Z, beta=X', gamma=Y'') -> device->world rotation matrix
+// formula consistent with full-tilt.js
+function eulerToMatrix(alphaDeg, betaDeg, gammaDeg){
+  const z = (alphaDeg||0)*DEG, x = (betaDeg||0)*DEG, y = (gammaDeg||0)*DEG;
+  const cX=Math.cos(x), cY=Math.cos(y), cZ=Math.cos(z);
+  const sX=Math.sin(x), sY=Math.sin(y), sZ=Math.sin(z);
+  return [
+    cZ*cY - sZ*sX*sY,   -cX*sZ,    cZ*sY + cY*sZ*sX,
+    cY*sZ + cZ*sX*sY,    cX*cZ,    sZ*sY - cZ*cY*sX,
+    -cX*sY,              sX,       cX*cY
+  ];
+}
+
+// ---------- Secure context check ----------
+function isSecure(){ return window.isSecureContext === true; }
+
+// ---------- Permission & startup ----------
+const permStatus = document.getElementById('permStatus');
+const secWarn = document.getElementById('secWarn');
+if(!isSecure()) secWarn.style.display='block';
+
+document.getElementById('btnPermit').addEventListener('click', async ()=>{
+  if(!isSecure()){
+    permStatus.innerHTML = '<span style="color:var(--warn)">iOS 需要 HTTPS(或 localhost)才能授权传感器。请用 README 里的 HTTPS 方式打开本页。</span>';
+    return;
+  }
+  let okM=true, okO=true;
+  try{
+    if(typeof DeviceMotionEvent!=='undefined' && typeof DeviceMotionEvent.requestPermission==='function'){
+      okM = (await DeviceMotionEvent.requestPermission())==='granted';
+    }
+    if(typeof DeviceOrientationEvent!=='undefined' && typeof DeviceOrientationEvent.requestPermission==='function'){
+      okO = (await DeviceOrientationEvent.requestPermission())==='granted';
+    }
+  }catch(e){
+    permStatus.innerHTML = '<span style="color:var(--bad)">授权请求失败:'+e.message+'。请确认是通过 HTTPS 打开。</span>';
+    return;
+  }
+  if(!okM || !okO){
+    permStatus.innerHTML = '<span style="color:var(--bad)">用户拒绝了传感器授权。请刷新重试。</span>';
+    return;
+  }
+  startSensors();
+});
+
+function startSensors(){
+  window.addEventListener('deviceorientation', onOrient, true);
+  window.addEventListener('devicemotion', onMotion, true);
+  document.getElementById('btnRec').disabled=false;
+  document.getElementById('btnWalk').disabled=false;
+  permStatus.innerHTML='传感器已启动 ✓ 摇一摇 / 转一转看看左图是否响应。';
+  setTimeout(updatePermStatus, 600);
+  // Note: the render loop is started once at the end of the script; do not start another rAF chain here (would cause double rendering).
+}
+function updatePermStatus(){
+  const m = S.hasMotion ? '<span class="dot ok"></span>devicemotion' : '<span class="dot no"></span>devicemotion(无)';
+  const o = S.hasOrient ? '<span class="dot ok"></span>deviceorientation' : '<span class="dot no"></span>deviceorientation(无)';
+  permStatus.innerHTML = m+' &nbsp; '+o+' &nbsp; 采样≈<b>'+S.rateHz.toFixed(0)+'Hz</b>';
+}
+setInterval(()=>{ if(S.hasMotion||S.hasOrient) updatePermStatus(); }, 1000);
+
+// ---------- Sensor callbacks ----------
+function onOrient(e){
+  if(e.alpha===null && e.beta===null && e.gamma===null) return;
+  S.hasOrient=true;
+  S.ori={a:e.alpha||0, b:e.beta||0, g:e.gamma||0};
+  S.R = eulerToMatrix(S.ori.a, S.ori.b, S.ori.g);
+}
+
+function onMotion(e){
+  const g = e.accelerationIncludingGravity;
+  // Drop the whole frame if any axis is missing (null/undefined) or non-finite, to avoid fake acceleration from substituting 0
+  if(!g || g.x==null || g.y==null || g.z==null || !isFinite(g.x+g.y+g.z)) return;
+  S.hasMotion=true;
+
+  // dt
+  let dt = (e.interval && e.interval>0) ? e.interval : null;
+  const now = performance.now()/1000;
+  if(dt===null){ dt = S.lastT ? (now - S.lastT) : 0.016; }
+  S.lastT = now;
+  if(dt<=0 || dt>0.2) dt = 0.016;            // fault tolerance
+  S.dtEMA = S.dtEMA*0.9 + dt*0.1;
+  S.rateHz = 1/Math.max(S.dtEMA,1e-3);
+  S.nSamp++;
+
+  // Rotation rate magnitude (deg/s) used for stillness detection
+  if(e.rotationRate){
+    S.rotRateMag = Math.hypot(e.rotationRate.alpha||0, e.rotationRate.beta||0, e.rotationRate.gamma||0);
+  }
+
+  // Device-frame acceleration with gravity -> world frame
+  const aDev = [ (g.x||0)*S.unitScale, (g.y||0)*S.unitScale, (g.z||0)*S.unitScale ];
+  const aWorld = matVec(S.R, aDev);
+
+  // Calibration: collect world-frame acceleration with gravity; its average is the world-frame gravity vector
+  if(S.calibrating){
+    S.calibBuf.push(aWorld.slice());
+    return;
+  }
+  if(!S.calibrated) return;
+
+  // ---- Linear acceleration (world frame, gravity removed) ----
+  // Prefer iOS CoreMotion's fused userAcceleration: it fuses gyro+accel to directly give gravity-free linear accel,
+  // far more accurate than "manually subtracting calibrated gravity" (a 1° orientation error only rotates this small vector by 1°, whereas manual gravity subtraction leaves a ~0.17 m/s² constant drift).
+  // Only fall back to manual gravity subtraction when this field is unavailable (some Android devices).
+  let aLin;
+  const ua = e.acceleration;
+  if(ua && ua.x!=null && ua.y!=null && ua.z!=null && isFinite(ua.x+ua.y+ua.z)){
+    aLin = matVec(S.R, [ ua.x*S.unitScale, ua.y*S.unitScale, ua.z*S.unitScale ]);
+    S.accelSrc='userAccel融合';
+  }else{
+    aLin = [ aWorld[0]-S.gWorld[0], aWorld[1]-S.gWorld[1], aWorld[2]-S.gWorld[2] ];
+    S.accelSrc='手动减重力';
+  }
+
+  // Walk mode: foot-mounted PDR, ZUPT de-drift on each foot landing (fully separate from gesture mode)
+  if(S.mode==='walk'){
+    if(S.walk.active) walkStep(aLin, mag3(aWorld), dt, now);
+    return;
+  }
+
+  // High-pass to remove slow bias (world frame)
+  const k = S.params.hp;
+  S.bias = [ S.bias[0]+(aLin[0]-S.bias[0])*k,
+             S.bias[1]+(aLin[1]-S.bias[1])*k,
+             S.bias[2]+(aLin[2]-S.bias[2])*k ];
+  const aHP = [ aLin[0]-S.bias[0], aLin[1]-S.bias[1], aLin[2]-S.bias[2] ];
+
+  // Stillness detection: use the high-passed aHP consistently with the integrator; also require small estimated velocity and slow rotation
+  const aMag = mag3(aHP);
+  const still = (aMag < S.params.zupt) && (mag3(S.vel) < 0.15) && (S.rotRateMag < 12);
+  if(still) S.stillCount++; else S.stillCount=0;
+
+  // Integrate: acceleration -> velocity
+  const gain = S.params.gain;
+  for(let i=0;i<3;i++) S.vel[i] += aHP[i]*dt*gain;
+
+  // ZUPT: sustained stillness -> zero out velocity; otherwise velocity leak
+  if(S.stillCount > 6){
+    S.vel=[0,0,0];
+  }else{
+    const decay = Math.max(0, 1 - S.params.leak*dt);
+    for(let i=0;i<3;i++) S.vel[i]*=decay;
+  }
+
+  // Integrate: velocity -> position (accumulate position only while recording; also update otherwise for live preview)
+  for(let i=0;i<3;i++) S.pos[i] += S.vel[i]*dt;
+
+  if(S.recording){
+    // Store raw world-frame linear accel (for batch reconstruction after stop); also store a causal preview point for live display
+    S.rawbuf.push({ t:now, dt:dt, aw:[aLin[0],aLin[1],aLin[2]],
+                    a:+S.ori.a.toFixed(2), b:+S.ori.b.toFixed(2), g:+S.ori.g.toFixed(2) });
+    S.buf.push({
+      t:+(now.toFixed(4)),
+      a:+S.ori.a.toFixed(2), b:+S.ori.b.toFixed(2), g:+S.ori.g.toFixed(2),
+      ax:+aLin[0].toFixed(4), ay:+aLin[1].toFixed(4), az:+aLin[2].toFixed(4),
+      vx:+S.vel[0].toFixed(4), vy:+S.vel[1].toFixed(4), vz:+S.vel[2].toFixed(4),
+      px:+S.pos[0].toFixed(5), py:+S.pos[1].toFixed(5), pz:+S.pos[2].toFixed(5)
+    });
+  }
+}
+
+// ---------- Calibration ----------
+const recStatus = document.getElementById('recStatus');
+document.getElementById('btnCalib').addEventListener('click', ()=>{
+  if(!S.hasMotion){ recStatus.textContent='传感器还没数据,先点①授权并启动。'; return; }
+  if(S.recording){ recStatus.textContent='请先停止录制再校准。'; return; }
+  if(S.walk.active){ recStatus.textContent='请先停止步行追踪再校准。'; return; }
+  S.unitScale=1; S.calibrating=true; S.calibBuf=[]; S.calibrated=false; // Must reset the unit first, otherwise repeated calibration leaks the previous scale
+  recStatus.innerHTML='<span style="color:var(--warn)">校准中…请保持手机静止 1.5 秒</span>';
+  setTimeout(()=>{
+    S.calibrating=false;
+    if(S.calibBuf.length<5){ recStatus.textContent='校准样本太少,请重试(确认①已启动)。'; return; }
+    // Average world-frame acceleration with gravity = world-frame gravity vector
+    let m=[0,0,0];
+    for(const v of S.calibBuf){ m[0]+=v[0]; m[1]+=v[1]; m[2]+=v[2]; }
+    const n=S.calibBuf.length; m=[m[0]/n,m[1]/n,m[2]/n];
+    const gm = mag3(m);
+    // Unit normalization: |g|≈9.8 is already m/s²; |g|≈1 means it is in G units -> multiply by 9.81; otherwise treat as m/s²
+    if(gm>5 && gm<15){ S.unitScale = 1; }
+    else if(gm>0.3 && gm<3){ S.unitScale = 9.80665/gm; }
+    else S.unitScale = 1;
+    // Recompute gravity using the normalized unit
+    S.gWorld = [ m[0]*S.unitScale, m[1]*S.unitScale, m[2]*S.unitScale ];
+    S.bias=[0,0,0]; S.vel=[0,0,0]; S.pos=[0,0,0]; S.stillCount=0;
+    S.calibrated=true;
+    // After re-calibration, discard the previous recorded trajectory and disable downstream actions (consistent with "Clear")
+    S.rawbuf=[]; S.buf=[]; S.replay=null;
+    document.getElementById('btnReplay').disabled=true;
+    document.getElementById('btnExport').disabled=true;
+    document.getElementById('btnExportCsv').disabled=true;
+    document.getElementById('btnRebuild').disabled=true;
+    recStatus.innerHTML='校准完成 ✓ 重力 |g|='+mag3(S.gWorld).toFixed(2)+' m/s²。现在可「开始录制」并在空中画手势。';
+  }, 1500);
+});
+
+// ---------- Batch reconstruction after stop (core: de-drift using "still at start and end" boundary constraints) ----------
+// Idea: for a rest→move→rest gesture, the whole-segment acceleration mean should be 0 and the final velocity should be 0.
+// Real-time causal filtering cannot achieve this, but applying an acausal correction to the whole segment after stopping can largely recover the shape.
+function reconstruct(){
+  const raw=S.rawbuf, N=raw.length;
+  if(N<3){ return; }
+  const T=(raw[N-1].t-raw[0].t)||1;
+
+  // 1) Smoothing: moving average over world-frame linear acceleration (denoise)
+  const W=S.params.smooth|0;
+  let A=raw.map(r=>[r.aw[0],r.aw[1],r.aw[2]]);
+  if(W>0){
+    const sm=[];
+    for(let i=0;i<N;i++){
+      let s=[0,0,0],c=0;
+      for(let j=Math.max(0,i-W);j<=Math.min(N-1,i+W);j++){ s[0]+=A[j][0]; s[1]+=A[j][1]; s[2]+=A[j][2]; c++; }
+      sm.push([s[0]/c,s[1]/c,s[2]/c]);
+    }
+    A=sm;
+  }
+
+  // 2) Remove constant bias: zero the whole-segment acceleration mean — eliminates gravity residual / sensor bias, the largest error source
+  if(S.params.detrend){
+    let m=[0,0,0]; for(const a of A){ m[0]+=a[0]; m[1]+=a[1]; m[2]+=a[2]; }
+    m=[m[0]/N,m[1]/N,m[2]/N];
+    for(const a of A){ a[0]-=m[0]; a[1]-=m[1]; a[2]-=m[2]; }
+  }
+
+  // 3) Integrate to velocity
+  const V=[[0,0,0]];
+  for(let i=1;i<N;i++){ const dt=raw[i].dt;
+    V.push([ V[i-1][0]+A[i][0]*dt, V[i-1][1]+A[i][1]*dt, V[i-1][2]+A[i][2]*dt ]); }
+
+  // 4) Linear detrend of velocity: force final velocity=0 (rest boundary), removing residual linear drift
+  if(S.params.detrend){
+    const vE=V[N-1];
+    for(let i=0;i<N;i++){ const f=(raw[i].t-raw[0].t)/T;
+      V[i][0]-=vE[0]*f; V[i][1]-=vE[1]*f; V[i][2]-=vE[2]*f; }
+  }
+
+  // 5) Integrate to position
+  const P=[[0,0,0]];
+  for(let i=1;i<N;i++){ const dt=raw[i].dt;
+    P.push([ P[i-1][0]+V[i][0]*dt, P[i-1][1]+V[i][1]*dt, P[i-1][2]+V[i][2]*dt ]); }
+
+  // 6) Closed gesture: force final position=start (check this when drawing a circle / writing a closed character)
+  if(S.params.closed){
+    const pE=P[N-1];
+    for(let i=0;i<N;i++){ const f=(raw[i].t-raw[0].t)/T;
+      P[i][0]-=pE[0]*f; P[i][1]-=pE[1]*f; P[i][2]-=pE[2]*f; }
+  }
+
+  // Write back to S.buf (for drawing/replay/export)
+  S.buf=raw.map((r,i)=>({
+    t:+r.t.toFixed(4), a:r.a, b:r.b, g:r.g,
+    ax:+A[i][0].toFixed(4), ay:+A[i][1].toFixed(4), az:+A[i][2].toFixed(4),
+    vx:+V[i][0].toFixed(4), vy:+V[i][1].toFixed(4), vz:+V[i][2].toFixed(4),
+    px:+P[i][0].toFixed(5), py:+P[i][1].toFixed(5), pz:+P[i][2].toFixed(5)
+  }));
+}
+
+// ---------- Recording ----------
+const btnRec=document.getElementById('btnRec');
+btnRec.addEventListener('click', ()=>{
+  if(!S.recording){
+    if(!S.calibrated){ recStatus.textContent='请先「校准重力」再录制。'; return; }
+    S.buf=[]; S.rawbuf=[]; S.vel=[0,0,0]; S.pos=[0,0,0]; S.bias=[0,0,0]; S.stillCount=0; S.replay=null;
+    document.getElementById('btnReplay').disabled=true;   // New recording starts; first disable replay/export to prevent operating on a half-filled buffer
+    document.getElementById('btnExport').disabled=true;
+    document.getElementById('btnExportCsv').disabled=true;
+    document.getElementById('btnRebuild').disabled=true;
+    S.recording=true;
+    btnRec.textContent='■ 停止录制'; btnRec.classList.remove('good'); btnRec.classList.add('bad');
+    recStatus.innerHTML='<span style="color:var(--bad)">● 录制中…</span> 静置一下→画圈/写字(2~4秒)→末尾再静置一下';
+  }else{
+    S.recording=false;
+    btnRec.textContent='③ 开始录制'; btnRec.classList.add('good'); btnRec.classList.remove('bad');
+    if(S.rawbuf.length<3){
+      // Recording too short: no reconstructable trajectory; discard the causal preview buffer and disable all downstream actions
+      S.buf=[]; S.replay=null;
+      document.getElementById('btnReplay').disabled=true;
+      document.getElementById('btnExport').disabled=true;
+      document.getElementById('btnExportCsv').disabled=true;
+      document.getElementById('btnRebuild').disabled=true;
+      recStatus.innerHTML='录制过短(<b>'+S.rawbuf.length+'</b> 采样),无法重建。请重新「开始录制」画 2~4 秒。';
+    }else{
+      reconstruct();   // ★ On stop, batch-reconstruct the trajectory with boundary constraints
+      const dur = S.rawbuf[S.rawbuf.length-1].t - S.rawbuf[0].t;
+      recStatus.innerHTML='录制结束:<b>'+S.rawbuf.length+'</b> 采样, '+dur.toFixed(1)+' 秒, 源:<b>'+S.accelSrc+'</b>。已重建;调下方参数可「↻ 重建」,或「回放/导出」。';
+      document.getElementById('btnReplay').disabled = S.buf.length<2;
+      document.getElementById('btnExport').disabled = S.buf.length<2;
+      document.getElementById('btnExportCsv').disabled = S.buf.length<2;
+      document.getElementById('btnRebuild').disabled = false;
+    }
+  }
+});
+
+// ---------- Clear ----------
+document.getElementById('btnClear').addEventListener('click', ()=>{
+  S.buf=[]; S.rawbuf=[]; S.pos=[0,0,0]; S.vel=[0,0,0]; S.replay=null; S.recording=false;
+  btnRec.textContent='③ 开始录制'; btnRec.classList.add('good'); btnRec.classList.remove('bad');
+  document.getElementById('btnReplay').disabled=true;
+  document.getElementById('btnExport').disabled=true;
+  document.getElementById('btnExportCsv').disabled=true;
+  document.getElementById('btnRebuild').disabled=true;
+  recStatus.textContent='已清空。';
+});
+
+// ---------- Replay ----------
+document.getElementById('btnReplay').addEventListener('click', ()=>{
+  if(S.buf.length<2) return;
+  S.replay={ i:0, t0:performance.now()/1000, base:S.buf[0].t };
+});
+
+// ---------- Plane switching ----------
+document.querySelectorAll('.planeBtn').forEach(b=>{
+  b.addEventListener('click', ()=>{
+    document.querySelectorAll('.planeBtn').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); S.plane=b.dataset.plane;
+  });
+});
+
+// ---------- Parameter sliders ----------
+function bindSlider(id, key, fmt){
+  const el=document.getElementById(id), out=document.getElementById('v'+id.slice(1));
+  const upd=()=>{ S.params[key]=parseFloat(el.value); out.textContent=fmt(S.params[key]); };
+  el.addEventListener('input', upd); upd();
+}
+bindSlider('sLeak','leak', v=>v.toFixed(2));
+bindSlider('sZupt','zupt', v=>v.toFixed(2));
+bindSlider('sHp','hp',     v=>v.toFixed(3));
+bindSlider('sSmooth','smooth', v=>v.toFixed(0));
+
+// After changing a parameter, if a recording already exists, immediately do an acausal reconstruction (see the effect without redrawing the gesture)
+function autoRebuild(){ if(!S.recording && S.rawbuf.length>=3){ reconstruct(); S.replay=null; } }
+document.getElementById('sSmooth').addEventListener('input', autoRebuild);
+document.getElementById('cbDetrend').addEventListener('change', e=>{ S.params.detrend=e.target.checked; autoRebuild(); });
+document.getElementById('cbClosed').addEventListener('change', e=>{ S.params.closed=e.target.checked; autoRebuild(); });
+document.getElementById('btnRebuild').addEventListener('click', ()=>{ reconstruct(); S.replay=null; });
+
+// ---------- Export ----------
+function download(name, text, type){
+  const blob=new Blob([text],{type}); const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download=name; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+}
+document.getElementById('btnExport').addEventListener('click', ()=>{
+  download('motion_'+Math.round(S.buf[0]?.t||0)+'.json', JSON.stringify({
+    meta:{ rateHz:+S.rateHz.toFixed(1), gWorld:S.gWorld, unitScale:S.unitScale, accelSrc:S.accelSrc,
+           reconstruction:'acausal: smooth -> demean(remove gravity-leak bias) -> integrate v -> linear-detrend v(end=0) -> integrate p -> optional close', params:S.params,
+           note:'frame=world: Z is up (gravity-aligned, absolute). X/Y azimuth is an ARBITRARY per-session reference (NOT true ENU/east-north) and yaw drifts without magnetometer. a=linear accel(m/s^2), p=position(m, drift-prone), angles=deg' },
+    samples:S.buf
+  },null,1), 'application/json');
+});
+document.getElementById('btnExportCsv').addEventListener('click', ()=>{
+  const head='t,alpha,beta,gamma,ax,ay,az,vx,vy,vz,px,py,pz\n';
+  const rows=S.buf.map(s=>[s.t,s.a,s.b,s.g,s.ax,s.ay,s.az,s.vx,s.vy,s.vz,s.px,s.py,s.pz].join(',')).join('\n');
+  download('motion_'+Math.round(S.buf[0]?.t||0)+'.csv', head+rows, 'text/csv');
+});
+// Upload to computer (send back raw world-frame linear accel + reconstructed trajectory for offline analysis/tuning on the computer)
+document.getElementById('btnUpload').addEventListener('click', async ()=>{
+  if(S.buf.length<2){ recStatus.textContent='还没有可上传的轨迹,先录制一段(2~4 秒)。'; return; }
+  const payload = {
+    meta:{ rateHz:+S.rateHz.toFixed(1), accelSrc:S.accelSrc, gWorld:S.gWorld, unitScale:S.unitScale, params:S.params },
+    samples:S.buf,
+    raw:S.rawbuf.map(r=>({ t:+r.t.toFixed(4), dt:+r.dt.toFixed(5),
+      awx:+r.aw[0].toFixed(4), awy:+r.aw[1].toFixed(4), awz:+r.aw[2].toFixed(4), a:r.a, b:r.b, g:r.g }))
+  };
+  recStatus.textContent='上传中…';
+  try{
+    const res = await fetch('/upload', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+    const txt = await res.text();
+    recStatus.innerHTML = res.ok
+      ? ('已上传到电脑 ✓ <b>uploads/'+txt+'</b> —— 现在可以让 Claude 分析了')
+      : ('上传失败 HTTP '+res.status+'(确认服务器是支持上传的新版)');
+  }catch(e){ recStatus.innerHTML='上传失败:'+e.message; }
+});
+
+// ======================= Walk mode PDR (foot-mounted zero-velocity update) =======================
+const btnWalk=document.getElementById('btnWalk');
+function freshWalk(active){ return { active:!!active, v:[0,0,0], p:[0,0,0], pLive:[0,0,0],
+  path:[[0,0,0]], swing:[], inStance:true, stanceCount:0, moveCount:0, steps:0, dist:0,
+  strides:[], strideTimes:[], stanceStartT:0, pendingStanceT:0,
+  peakGyro:0, peakAcc:0, pitchTO:0, pitchHS:0, alphaTO:0, headingChange:0, flatPitch:null }; }
+
+function startWalk(){
+  if(!S.calibrated){ recStatus.textContent='请先「校准」(脚先别动,静置 1.5 秒)再开始步行追踪。'; return; }
+  S.walk=freshWalk(true);
+  S.walk.flatPitch = S.ori.b;     // Foot-pitch reference while standing (foot flat); HS/TO are measured relative to it
+  renderGait();
+  btnWalk.textContent='■ 停止'; btnWalk.classList.remove('good'); btnWalk.classList.add('bad');
+  recStatus.innerHTML='<span style="color:var(--bad)">● 步行追踪中…</span> 绑脚上正常走动,每步落地会自动 ZUPT 校正。';
+}
+function stopWalk(){
+  S.walk.active=false;
+  btnWalk.textContent='▶ 开始步行追踪'; btnWalk.classList.add('good'); btnWalk.classList.remove('bad');
+  recStatus.innerHTML='步行停止 ✓ 跨步 <b>'+S.walk.steps+'</b>(≈'+(S.walk.steps*2)+' 步),距离 <b>'+S.walk.dist.toFixed(2)+'</b> m。下方为步态分析。';
+  renderGait();
+}
+btnWalk.addEventListener('click', ()=>{ S.walk.active ? stopWalk() : startWalk(); });
+document.getElementById('btnWalkClear').addEventListener('click', ()=>{
+  const a=S.walk.active; S.walk=freshWalk(a); S.walk.flatPitch=S.ori.b; renderGait(); recStatus.textContent='路径已清空。';
+});
+// Upload gait data (summary + per-stride detail + path) to the computer for analysis
+document.getElementById('btnWalkUpload').addEventListener('click', async ()=>{
+  if(S.walk.strides.length<2){ recStatus.textContent='还没有足够的步态数据,先走几步。'; return; }
+  const payload={ kind:'walk', meta:{ rateHz:+S.rateHz.toFixed(1), accelSrc:S.accelSrc, params:S.params },
+    summary:computeGait(), strides:S.walk.strides, path:S.walk.path };
+  recStatus.textContent='上传中…';
+  try{
+    const res=await fetch('/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const txt=await res.text();
+    recStatus.innerHTML=res.ok? ('已上传 ✓ <b>uploads/'+txt+'</b> — 可让 Claude 分析步态了') : ('上传失败 HTTP '+res.status);
+  }catch(e){ recStatus.innerHTML='上传失败:'+e.message; }
+});
+
+// Per frame: stance detection + swing-phase integration + commit one stride on landing (ZUPT de-drift) + collect gait metrics
+function walkStep(aLin, accMag, dt, now){
+  const W=S.walk, P=S.params;
+  // Stance (foot landed): total specific force ≈ g and angular velocity is small
+  const isStance = Math.abs(accMag-9.80665) < P.walkAccTh && S.rotRateMag < P.walkGyroTh;
+  if(isStance){ W.stanceCount++; W.moveCount=0; } else { W.moveCount++; W.stanceCount=0; }
+
+  if(!W.inStance && W.stanceCount>=P.walkN){          // swing -> stance (heel strike): commit one stride
+    W.pitchHS = S.ori.b;                              // foot-pitch snapshot at landing
+    W.headingChange = wrap180(S.ori.a - W.alphaTO);   // heading change of this step (turning)
+    commitStride();
+    W.inStance=true; W.v=[0,0,0]; W.pLive=W.p.slice();
+    W.stanceStartT=now;                               // start timing this stance phase
+  } else if(W.inStance && W.moveCount>=P.walkN){       // stance -> swing (toe off): start a new step
+    W.inStance=false; W.swing=[]; W.v=[0,0,0]; W.pLive=W.p.slice();
+    W.pendingStanceT = W.stanceStartT>0 ? (now - W.stanceStartT) : 0;  // duration of the stance preceding this swing
+    W.pitchTO = S.ori.b; W.alphaTO = S.ori.a;         // toe-off snapshot (foot pitch / heading)
+    W.peakGyro=0; W.peakAcc=0;                         // reset peaks for this step
+  }
+
+  if(W.inStance){
+    W.v=[0,0,0]; W.pLive=W.p.slice();                 // foot landed and still: velocity=0 (ZUPT)
+  } else {
+    W.swing.push({aw:[aLin[0],aLin[1],aLin[2]], dt:dt, t:now});  // buffer this step; correct the whole segment on landing
+    W.peakGyro=Math.max(W.peakGyro, S.rotRateMag);    // peak swing angular velocity (most robust proxy for gait vigor)
+    W.peakAcc=Math.max(W.peakAcc, accMag);            // landing impact (relative)
+    W.v[0]+=aLin[0]*dt; W.v[1]+=aLin[1]*dt; W.v[2]+=aLin[2]*dt;  // temporary preview integration
+    W.pLive=[ W.pLive[0]+W.v[0]*dt, W.pLive[1]+W.v[1]*dt, W.pLive[2]+W.v[2]*dt ];
+  }
+}
+// On each foot landing: apply a "final velocity=0" boundary constraint to the swing segment, re-integrate clean displacement and foot clearance, and record gait metrics
+function commitStride(){
+  const W=S.walk, sw=W.swing;
+  if(sw.length<3){ return; }
+  const v=[[0,0,0]];
+  for(let i=1;i<sw.length;i++){ const d=sw[i].dt;
+    v.push([ v[i-1][0]+sw[i].aw[0]*d, v[i-1][1]+sw[i].aw[1]*d, v[i-1][2]+sw[i].aw[2]*d ]); }
+  const T=(sw[sw.length-1].t - sw[0].t)||1, vE=v[v.length-1];
+  for(let i=0;i<v.length;i++){ const f=(sw[i].t-sw[0].t)/T;   // linear detrend of velocity: zero out velocity at landing end
+    v[i][0]-=vE[0]*f; v[i][1]-=vE[1]*f; v[i][2]-=vE[2]*f; }
+  // === Vertical channel: both-ends constraint (foot lift relative to ground → apex → landing); compute first, shared by trajectory and foot clearance ===
+  // Smooth vertical linear accel (denoise) → integrate vertical velocity and detrend (v end=0) → integrate vertical position and apply both-ends constraint (z end=0)
+  const azS=[]; for(let i=0;i<sw.length;i++){ let s=0,c=0; for(let j=Math.max(0,i-2);j<=Math.min(sw.length-1,i+2);j++){ s+=sw[j].aw[2]; c++; } azS.push(s/c); }
+  const vz=[0]; for(let i=1;i<sw.length;i++) vz.push(vz[i-1]+azS[i]*sw[i].dt);
+  const vzE=vz[vz.length-1]; for(let i=0;i<vz.length;i++) vz[i]-=vzE*((sw[i].t-sw[0].t)/T);
+  const zc=[0]; for(let i=1;i<sw.length;i++) zc.push(zc[i-1]+vz[i]*sw[i].dt);
+  const zE=zc[zc.length-1]; for(let i=0;i<zc.length;i++) zc[i]-=zE*((sw[i].t-sw[0].t)/T);
+  let zmax=-1e9,zmin=1e9,vzPk=0;
+  for(let i=0;i<zc.length;i++){ if(zc[i]>zmax)zmax=zc[i]; if(zc[i]<zmin)zmin=zc[i]; if(Math.abs(vz[i])>vzPk)vzPk=Math.abs(vz[i]); }
+  const clearance=Math.max(zmax,-zmin);   // take the larger of up/down, robust to world-Z sign flips
+  const vertAmp=zmax-zmin;                 // vertical swing peak-to-peak amplitude (to judge whether there is a real signal)
+  const zFlip=(-zmin>zmax)?-1:1;   // the foot only lifts upward; if the main peak is negative, the vertical sign is flipped, so flip it positive for display
+  const zArc=[]; { const st=Math.max(1,Math.floor(zc.length/16)); for(let i=0;i<zc.length;i+=st) zArc.push(+(zc[i]*zFlip).toFixed(4)); }
+  // === Trajectory: horizontal uses ZUPT integration (final velocity=0), vertical uses the "ground-anchored foot-lift arc" above ===
+  // Key: each foot landing anchors the foot back to the ground (z=0), so the vertical no longer accumulates drift across steps → start/end are both on the ground, with a foot-lift arc in between
+  let p=W.p.slice(); let peakV=0;
+  for(let i=1;i<sw.length;i++){ const d=sw[i].dt;
+    p[0]+=v[i][0]*d; p[1]+=v[i][1]*d;          // horizontal integrated as usual
+    W.path.push([p[0], p[1], Math.max(0, zc[i]*zFlip)]);  // ground=0, arc only goes up
+    peakV=Math.max(peakV, Math.hypot(v[i][0],v[i][1]));
+  }
+  const strideLen=Math.hypot(p[0]-W.p[0], p[1]-W.p[1]);  // horizontal stride length (robust to vertical drift)
+  if(strideLen>0.1 && strideLen<2.0){                    // only count steps with a plausible stride length, to filter jitter
+    W.steps++; W.dist+=strideLen; W.strideTimes.push(sw[sw.length-1].t);
+    const fp=W.flatPitch;
+    W.strides.push({ t:sw[sw.length-1].t, swingT:T, stanceT:W.pendingStanceT||0, len:strideLen,
+      peakV, peakGyro:W.peakGyro, peakAcc:W.peakAcc, clearance, vertAmp, vzPeak:vzPk, zArc,
+      pitchHS:(fp!=null? W.pitchHS-fp : W.pitchHS), pitchTO:(fp!=null? W.pitchTO-fp : W.pitchTO),
+      heading:W.headingChange||0 });
+    renderGait();
+  }
+  W.p=[p[0], p[1], 0];   // landing: anchor foot back to the ground (z=0), vertical accumulates no drift
+}
+
+// ---- Gait metric computation ----
+function wrap180(d){ return ((d+540)%360)-180; }
+function gStat(arr){ const n=arr.length; if(n<2) return {n,mean:NaN,cv:NaN};
+  const mean=arr.reduce((a,b)=>a+b,0)/n;
+  const sd=Math.sqrt(arr.reduce((a,b)=>a+(b-mean)*(b-mean),0)/(n-1));
+  return {n, mean, cv:mean?sd/mean*100:NaN}; }
+function gMedian(a){ if(!a.length) return NaN; const s=a.slice().sort((x,y)=>x-y),m=s.length>>1;
+  return s.length%2? s[m] : (s[m-1]+s[m])/2; }
+function gMean(a){ return a.length? a.reduce((x,y)=>x+y,0)/a.length : NaN; }
+function computeGait(){
+  const W=S.walk, all=W.strides;
+  const core = all.length>=4 ? all.slice(1,-1) : all;   // drop the first and last stride, keep the steady state
+  const valid=core.filter(s=>s.stanceT>0);                    // drop the first stride with stanceT=0 to avoid contamination
+  const stepTimes=valid.map(s=>s.swingT+s.stanceT).filter(x=>x>0);   // stride time (gait cycle) = stance + swing
+  const speeds=valid.map(s=>s.len/(s.swingT+s.stanceT)).filter(isFinite);
+  const stancePct=valid.map(s=>s.stanceT/(s.swingT+s.stanceT)*100).filter(isFinite);
+  const dur=W.strideTimes.length>=2? W.strideTimes[W.strideTimes.length-1]-W.strideTimes[0]:0;
+  return {
+    n:core.length, steps:W.steps, dist:W.dist, dur,
+    cadence: stepTimes.length? 60/gMedian(stepTimes):NaN,
+    stepTime:gStat(stepTimes), swingT:gStat(core.map(s=>s.swingT)), len:gStat(core.map(s=>s.len)),
+    speed: speeds.length? gMedian(speeds):NaN,
+    stancePct: gMean(stancePct),
+    pitchHS: gMean(core.map(s=>s.pitchHS)), pitchTO: gMean(core.map(s=>s.pitchTO)),
+    clearance: gMean(core.map(s=>s.clearance)), vertAmp: gMean(core.map(s=>s.vertAmp)),
+    peakGyro: gMean(core.map(s=>s.peakGyro)), peakAcc: gMean(core.map(s=>s.peakAcc)),
+    turnSteps: core.filter(s=>Math.abs(s.heading)>=20).length,
+    totalTurn: all.reduce((a,s)=>a+Math.abs(s.heading),0),
+  };
+}
+function renderGait(){
+  const el=document.getElementById('gaitPanel'); if(!el) return;
+  const g=computeGait(), MIN=12;
+  const f=(x,d)=>isFinite(x)? x.toFixed(d) : '—';
+  const cvColor=cv=> cv<3?'#3fb950': cv<6?'#e3b341':'#f85149';
+  const spdColor=v=> v>=1.0?'#3fb950': v>=0.8?'#e3b341':'#f85149';
+  const cvCell=st=> (!isFinite(st.cv)||st.n<MIN)? '<span style="color:#56627a">CV采集中</span>'
+                    : '<span style="color:'+cvColor(st.cv)+'">CV '+st.cv.toFixed(1)+'%</span>';
+  const row=(k,v)=>'<div style="color:#8b98a9">'+k+'</div><div>'+v+'</div>';
+  const dim='style="color:#56627a"';
+  let h='<div class="gaitgrid">';
+  h+='<div class="gh">⏱ 时间</div>';
+  h+=row('跨步频 cadence', isFinite(g.cadence)? '<b>'+f(g.cadence,0)+'</b> 跨步/分 <span '+dim+'>(≈'+f(g.cadence*2,0)+' 步/分)</span>':'—');
+  h+=row('跨步时/步态周期', isFinite(g.stepTime.mean)? f(g.stepTime.mean*1000,0)+' ms · '+cvCell(g.stepTime):'—');
+  h+=row('摆动时间 swing', isFinite(g.swingT.mean)? f(g.swingT.mean*1000,0)+' ms · '+cvCell(g.swingT):'—');
+  h+=row('支撑相占比', isFinite(g.stancePct)? f(g.stancePct,0)+' %':'—');
+  h+='<div class="gh">📏 空间</div>';
+  h+=row('步速 speed', isFinite(g.speed)? '<b style="color:'+spdColor(g.speed)+'">'+f(g.speed,2)+'</b> m/s':'—');
+  h+=row('跨步长 stride len', isFinite(g.len.mean)? f(g.len.mean*100,0)+' cm · '+cvCell(g.len):'—');
+  h+=row('步长 step length', isFinite(g.len.mean)? '<b>'+f(g.len.mean*50,0)+'</b> cm <span '+dim+'>(≈跨步÷2)</span>':'—');
+  // Foot clearance = upward vertical excursion off the ground. Too small = no signal; too large may include rotation-drift amplification and needs calibration against ground truth
+  h+=row('抬脚高度*', isFinite(g.clearance)?
+      (g.vertAmp<0.005 ? '<span style="color:var(--warn)">信号弱</span>'
+       : '<b>'+f(g.clearance*100,1)+'</b> cm '+(g.vertAmp>0.12
+            ? '<span style="color:var(--warn)">(偏大·疑含漂移·需标定)</span>'
+            : '<span '+dim+'>(幅度'+f(g.vertAmp*100,1)+'cm)</span>')) : '—');
+  h+='<div class="gh">🦶 运动学</div>';
+  h+=row('着地足倾角 HS', isFinite(g.pitchHS)? f(g.pitchHS,0)+'°':'—');
+  h+=row('离地足倾角 TO', isFinite(g.pitchTO)? f(g.pitchTO,0)+'°':'—');
+  h+=row('摆动峰值角速度', isFinite(g.peakGyro)? f(g.peakGyro,0)+' °/s':'—');
+  h+=row('着地冲击(相对)', isFinite(g.peakAcc)? f(g.peakAcc,1)+' m/s²':'—');
+  h+='<div class="gh">🔄 转身</div>';
+  h+=row('转身步数 / 累计转向', g.turnSteps+' 步 / '+f(g.totalTurn,0)+'°');
+  h+='<div class="gh" style="color:var(--warn)">⚠️ 需第二只脚(单脚测不了)</div>';
+  h+='<div '+dim+'>双支撑时间</div><div '+dim+'>需对侧脚</div>';
+  h+='<div '+dim+'>步宽</div><div '+dim+'>需双脚</div>';
+  h+='<div '+dim+'>左右对称性</div><div '+dim+'>需双脚</div>';
+  h+='</div>';
+  h+='<div class="hint" style="margin-top:6px;">基于 <b>'+g.n+'</b> 个跨步稳态(去首尾各1步)。CV 需≥'+MIN+'跨步才显示。'+
+     '注:单脚每个步态周期摆动一次=1 个<b>跨步(stride)</b>,故所有指标按跨步计;日常"步数"≈2×跨步(左右对称假设);临床 CV 阈值正是按跨步,可直接对照。步长=跨步÷2(对称假设)。*抬脚高度:竖直弧线形状(抬起→到顶→落地)是真实的,但绝对量级不确定——可能含摆动旋转期的重力泄漏放大。需用已知高度(如跨过一本书)对照标定出比例系数后才可信;形状/相对趋势可用。</div>';
+  el.innerHTML=h;
+}
+
+// ---- Mode switching ----
+function setMode(m){
+  S.mode=m; const walk=(m==='walk');
+  document.getElementById('modeGesture').classList.toggle('on', !walk);
+  document.getElementById('modeWalk').classList.toggle('on', walk);
+  document.querySelectorAll('.gesture-only').forEach(e=> e.style.display = walk?'none':'');
+  document.querySelectorAll('.walk-only').forEach(e=> e.style.display = walk?'':'none');
+  const pt=document.getElementById('pathTitle');
+  if(pt) pt.textContent = walk ? '🗺️ 步行路线(俯视)' : '✍️ 空间轨迹(短手势)';
+  if(walk){ if(S.recording) btnRec.click(); renderGait(); }   // When switching to walk, stop recording and refresh the gait panel
+  else { if(S.walk.active) stopWalk(); }                      // When switching back to gesture, stop walking
+}
+document.getElementById('modeGesture').addEventListener('click', ()=>setMode('gesture'));
+document.getElementById('modeWalk').addEventListener('click', ()=>setMode('walk'));
+bindSlider('sWalkAcc','walkAccTh', v=>v.toFixed(2));
+bindSlider('sWalkGyro','walkGyroTh', v=>v.toFixed(0));
+bindSlider('sWalkN','walkN', v=>v.toFixed(0));
+
+// ======================= Rendering =======================
+const cubeCv=document.getElementById('cubeCanvas'), cubeCtx=cubeCv.getContext('2d');
+const pathCv=document.getElementById('pathCanvas'), pathCtx=pathCv.getContext('2d');
+const oriReadout=document.getElementById('oriReadout');
+const liveReadout=document.getElementById('liveReadout');
+
+// 3D view: drag with finger/mouse to rotate (only active in the 3D plane)
+let _camDrag=null;
+function _camPos(e){ const r=pathCv.getBoundingClientRect(); const t=(e.touches&&e.touches[0])||e; return [t.clientX-r.left, t.clientY-r.top]; }
+pathCv.addEventListener('pointerdown', e=>{ if(S.plane!=='3D') return; _camDrag=_camPos(e); try{pathCv.setPointerCapture(e.pointerId);}catch(_){} });
+pathCv.addEventListener('pointermove', e=>{ if(!_camDrag) return; const p=_camPos(e);
+  S.cam.az += (p[0]-_camDrag[0])*0.01;
+  S.cam.el = Math.min(1.45, Math.max(0.08, S.cam.el - (p[1]-_camDrag[1])*0.006));
+  _camDrag=p; e.preventDefault(); });
+window.addEventListener('pointerup', ()=>{ _camDrag=null; });
+window.addEventListener('pointercancel', ()=>{ _camDrag=null; });  // also reset when the touch is taken over by the system
+
+function fitCanvas(cv){
+  const dpr=Math.min(window.devicePixelRatio||1, 2.5);
+  const w=cv.clientWidth, h=Math.round(w*0.78);
+  if(cv.width!==Math.round(w*dpr)||cv.height!==Math.round(h*dpr)){
+    cv.width=Math.round(w*dpr); cv.height=Math.round(h*dpr); cv.style.height=h+'px';
+  }
+  return {w:cv.width, h:cv.height, dpr};
+}
+
+// Phone box (device frame): x right, y up, z out of screen
+const BOX=(function(){
+  const w=0.42,h=0.86,d=0.06;
+  const v=[[-w,-h,d],[w,-h,d],[w,h,d],[-w,h,d],   // front (screen)
+           [-w,-h,-d],[w,-h,-d],[w,h,-d],[-w,h,-d]];// back
+  const faces=[
+    {idx:[0,1,2,3], col:'#4cc2ff', label:'屏'}, // +Z screen
+    {idx:[5,4,7,6], col:'#33405a'},             // -Z
+    {idx:[1,5,6,2], col:'#2a3850'},             // +X
+    {idx:[4,0,3,7], col:'#2a3850'},             // -X
+    {idx:[3,2,6,7], col:'#3a4a66'},             // +Y top
+    {idx:[4,5,1,0], col:'#222d40'},             // -Y bottom
+  ];
+  return {v,faces};
+})();
+
+function drawCube(){
+  const {w,h}=fitCanvas(cubeCv); const ctx=cubeCtx;
+  ctx.clearRect(0,0,w,h);
+  const cx=w/2, cy=h/2, sc=Math.min(w,h)*0.30;
+  // Rotate vertices into world frame and isometric-project: camera at +Y looking toward -Y, up on screen=world Z up, right=world X
+  const proj=BOX.v.map(p=>{
+    const wld=matVec(S.R, p);
+    const sx = cx + (wld[0] + 0.32*wld[1])*sc;
+    const sy = cy - (wld[2] - 0.16*wld[1])*sc;
+    return {sx, sy, depth:wld[1]};
+  });
+  // Painter's algorithm: draw small-depth (far) faces first
+  const order=BOX.faces.map((f,i)=>({f, d:(f.idx.reduce((s,k)=>s+proj[k].depth,0)/f.idx.length)}))
+                       .sort((A,B)=>A.d-B.d);
+  for(const {f} of order){
+    ctx.beginPath();
+    f.idx.forEach((k,j)=>{ const p=proj[k]; j?ctx.lineTo(p.sx,p.sy):ctx.moveTo(p.sx,p.sy); });
+    ctx.closePath();
+    ctx.fillStyle=f.col; ctx.globalAlpha=0.92; ctx.fill();
+    ctx.globalAlpha=1; ctx.strokeStyle='#0b0e14'; ctx.lineWidth=1.5; ctx.stroke();
+    if(f.label){
+      const c=f.idx.reduce((a,k)=>[a[0]+proj[k].sx,a[1]+proj[k].sy],[0,0]).map(z=>z/4);
+      ctx.fillStyle='#06202e'; ctx.font='bold 13px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText(f.label, c[0], c[1]);
+    }
+  }
+  // Small coordinate axes (world frame)
+  const axes=[{v:[1,0,0],c:'#f85149',n:'X'},{v:[0,1,0],c:'#3fb950',n:'Y'},{v:[0,0,1],c:'#4cc2ff',n:'Z'}];
+  const ox=w-44, oy=h-30, al=26;
+  axes.forEach(ax=>{
+    const sx=ox+(ax.v[0]+0.32*ax.v[1])*al, sy=oy-(ax.v[2]-0.16*ax.v[1])*al;
+    ctx.strokeStyle=ax.c; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(ox,oy); ctx.lineTo(sx,sy); ctx.stroke();
+    ctx.fillStyle=ax.c; ctx.font='10px sans-serif'; ctx.fillText(ax.n,sx,sy);
+  });
+}
+
+function projectPlane(p){
+  if(S.plane==='XY') return [p.px, p.py];
+  if(S.plane==='XZ') return [p.px, p.pz];
+  return [p.py, p.pz]; // YZ
+}
+function drawPath(){
+  const {w,h}=fitCanvas(pathCv); const ctx=pathCtx;
+  ctx.clearRect(0,0,w,h);
+  // Grid
+  ctx.strokeStyle='#222c3c'; ctx.lineWidth=1;
+  for(let gx=0;gx<=8;gx++){ const x=gx/8*w; ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke(); }
+  for(let gy=0;gy<=6;gy++){ const y=gy/6*h; ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); }
+
+  const src = S.buf;
+  let upto = src.length;
+  if(S.replay){ upto = Math.max(S.replay.i, 2); } // at replay start draw at least 2 points, to avoid flashing the placeholder text
+  if(upto<2){
+    ctx.fillStyle='#56627a'; ctx.font='13px sans-serif'; ctx.textAlign='center';
+    ctx.fillText(S.recording?'录制中…画个圈':'录制后这里显示轨迹', w/2, h/2);
+    return;
+  }
+  // Auto scaling
+  let minX=1e9,maxX=-1e9,minY=1e9,maxY=-1e9;
+  for(let i=0;i<upto;i++){ const q=projectPlane(src[i]);
+    if(q[0]<minX)minX=q[0]; if(q[0]>maxX)maxX=q[0]; if(q[1]<minY)minY=q[1]; if(q[1]>maxY)maxY=q[1]; }
+  const spanX=Math.max(maxX-minX,1e-3), spanY=Math.max(maxY-minY,1e-3);
+  const span=Math.max(spanX,spanY)*1.25;
+  const ccx=(minX+maxX)/2, ccy=(minY+maxY)/2;
+  const sc=Math.min(w,h)/span;
+  const toS=q=>[ w/2+(q[0]-ccx)*sc, h/2-(q[1]-ccy)*sc ];
+
+  // Trajectory (gradient color, brighter head)
+  ctx.lineWidth=3; ctx.lineJoin='round'; ctx.lineCap='round';
+  for(let i=1;i<upto;i++){
+    const a=toS(projectPlane(src[i-1])), b=toS(projectPlane(src[i]));
+    const t=i/upto;
+    ctx.strokeStyle=`hsl(${200+120*t},85%,${45+25*t}%)`;
+    ctx.beginPath(); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]); ctx.stroke();
+  }
+  // Start point / current point
+  const p0=toS(projectPlane(src[0])), pN=toS(projectPlane(src[upto-1]));
+  ctx.fillStyle='#3fb950'; ctx.beginPath(); ctx.arc(p0[0],p0[1],5,0,7); ctx.fill();
+  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(pN[0],pN[1],5,0,7); ctx.fill();
+  // Field-of-view annotation
+  ctx.fillStyle='#56627a'; ctx.font='10px monospace'; ctx.textAlign='left';
+  ctx.fillText('视野≈'+span.toFixed(2)+'m · 平面'+S.plane, 6, h-8);
+}
+
+// Walk mode: top-down ground route (world-frame XY plane)
+function drawWalkPath(){
+  const {w,h}=fitCanvas(pathCv); const ctx=pathCtx;
+  ctx.clearRect(0,0,w,h);
+  ctx.strokeStyle='#222c3c'; ctx.lineWidth=1;
+  for(let gx=0;gx<=8;gx++){ const x=gx/8*w; ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke(); }
+  for(let gy=0;gy<=6;gy++){ const y=gy/6*h; ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); }
+
+  const W=S.walk, pts=W.path;
+  if(!pts || pts.length<1){
+    ctx.fillStyle='#56627a'; ctx.font='13px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('点「▶ 开始步行追踪」后走动', w/2, h/2); return;
+  }
+  const all = (W.active && W.pLive) ? pts.concat([W.pLive]) : pts;
+  let minX=1e9,maxX=-1e9,minY=1e9,maxY=-1e9;
+  for(const q of all){ if(q[0]<minX)minX=q[0]; if(q[0]>maxX)maxX=q[0]; if(q[1]<minY)minY=q[1]; if(q[1]>maxY)maxY=q[1]; }
+  const span=Math.max(maxX-minX, maxY-minY, 0.5)*1.2;
+  const ccx=(minX+maxX)/2, ccy=(minY+maxY)/2, sc=Math.min(w,h)/span;
+  const toS=q=>[ w/2+(q[0]-ccx)*sc, h/2-(q[1]-ccy)*sc ];
+
+  // Committed route
+  ctx.strokeStyle='#4cc2ff'; ctx.lineWidth=3; ctx.lineJoin='round'; ctx.lineCap='round';
+  ctx.beginPath(); pts.forEach((q,i)=>{ const s=toS(q); i?ctx.lineTo(s[0],s[1]):ctx.moveTo(s[0],s[1]); }); ctx.stroke();
+  // Landing point of each step
+  ctx.fillStyle='#2d6cff';
+  for(const q of pts){ const s=toS(q); ctx.beginPath(); ctx.arc(s[0],s[1],2.5,0,7); ctx.fill(); }
+  // Current swing segment (dashed preview)
+  if(W.active && !W.inStance && W.pLive){
+    const a=toS(W.p), b=toS(W.pLive);
+    ctx.strokeStyle='rgba(227,179,65,.8)'; ctx.lineWidth=2; ctx.setLineDash([4,4]);
+    ctx.beginPath(); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]); ctx.stroke(); ctx.setLineDash([]);
+  }
+  // Start / current
+  const s0=toS(pts[0]); ctx.fillStyle='#3fb950'; ctx.beginPath(); ctx.arc(s0[0],s0[1],6,0,7); ctx.fill();
+  const cur=toS(W.p); ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(cur[0],cur[1],5,0,7); ctx.fill(); // anchor to the committed position to avoid jumping on each step
+  ctx.fillStyle='#9fb0c8'; ctx.font='11px monospace'; ctx.textAlign='left';
+  ctx.fillText('跨步 '+W.steps+' · '+W.dist.toFixed(2)+'m · 视野'+span.toFixed(1)+'m', 6, h-8);
+}
+
+// 3D trajectory rendering: ground grid + shadow projection + height connectors + 3D path (drag to rotate)
+function draw3D(pts){
+  const {w,h}=fitCanvas(pathCv); const ctx=pathCtx;
+  ctx.clearRect(0,0,w,h);
+  if(!pts || pts.length<2){
+    ctx.fillStyle='#56627a'; ctx.font='13px sans-serif'; ctx.textAlign='center';
+    ctx.fillText(S.mode==='walk'?'走动后显示 3D 路线':'录制后显示 3D 轨迹', w/2, h/2); return;
+  }
+  let mn=[1e9,1e9,1e9], mx=[-1e9,-1e9,-1e9];
+  for(const p of pts) for(let k=0;k<3;k++){ if(p[k]<mn[k])mn[k]=p[k]; if(p[k]>mx[k])mx[k]=p[k]; }
+  const c=[(mn[0]+mx[0])/2,(mn[1]+mx[1])/2,(mn[2]+mx[2])/2];
+  const ext=Math.max(mx[0]-mn[0], mx[1]-mn[1], mx[2]-mn[2], 0.3);
+  const sc=Math.min(w,h)/(ext*1.7), cx=w/2, cy=h/2+h*0.06;
+  const cam=S.cam, ca=Math.cos(cam.az), sa=Math.sin(cam.az), se=Math.sin(cam.el), ce=Math.cos(cam.el);
+  const proj=(x,y,z)=>{ const rx=ca*x-sa*y, ry=sa*x+ca*y; return [cx+rx*sc, cy-(z*se-ry*ce)*sc]; };
+  const P=p=>proj(p[0]-c[0], p[1]-c[1], p[2]-c[2]);
+  const zF=mn[2]-c[2];                       // ground = lowest z (relative)
+  // Ground grid
+  ctx.strokeStyle='#1b2433'; ctx.lineWidth=1;
+  const N=6, x0=mn[0]-c[0],x1=mx[0]-c[0],y0=mn[1]-c[1],y1=mx[1]-c[1];
+  for(let i=0;i<=N;i++){
+    const fx=x0+(x1-x0)*i/N, fy=y0+(y1-y0)*i/N;
+    let a=proj(fx,y0,zF),b=proj(fx,y1,zF); ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();
+    let u=proj(x0,fy,zF),v=proj(x1,fy,zF); ctx.beginPath();ctx.moveTo(u[0],u[1]);ctx.lineTo(v[0],v[1]);ctx.stroke();
+  }
+  // Ground shadow projection
+  ctx.strokeStyle='rgba(90,100,120,.4)'; ctx.lineWidth=1.5; ctx.lineJoin='round';
+  ctx.beginPath(); pts.forEach((p,i)=>{ const s=proj(p[0]-c[0],p[1]-c[1],zF); i?ctx.lineTo(s[0],s[1]):ctx.moveTo(s[0],s[1]); }); ctx.stroke();
+  // Vertical connectors (sense of height)
+  ctx.strokeStyle='rgba(90,100,120,.22)'; ctx.lineWidth=1;
+  const stp=Math.max(1,Math.floor(pts.length/20));
+  for(let i=0;i<pts.length;i+=stp){ const a=P(pts[i]), b=proj(pts[i][0]-c[0],pts[i][1]-c[1],zF); ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke(); }
+  // 3D trajectory (gradient, brighter head)
+  ctx.lineWidth=3; ctx.lineJoin='round'; ctx.lineCap='round';
+  for(let i=1;i<pts.length;i++){ const a=P(pts[i-1]),b=P(pts[i]); const t=i/pts.length;
+    ctx.strokeStyle=`hsl(${200+120*t},85%,${50+20*t}%)`; ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke(); }
+  // Start / current
+  const s0=P(pts[0]); ctx.fillStyle='#3fb950'; ctx.beginPath();ctx.arc(s0[0],s0[1],6,0,7);ctx.fill();
+  const sN=P(pts[pts.length-1]); ctx.fillStyle='#fff'; ctx.beginPath();ctx.arc(sN[0],sN[1],5,0,7);ctx.fill();
+  // Three-axis indicator
+  const tri=[['X','#f85149',[1,0,0]],['Y','#3fb950',[0,1,0]],['Z↑','#4cc2ff',[0,0,1]]];
+  const ox=40, oy=h-34, o=proj(0,0,0);
+  tri.forEach(t=>{ const e=proj(t[2][0],t[2][1],t[2][2]); let dx=e[0]-o[0],dy=e[1]-o[1]; const L=Math.hypot(dx,dy)||1; dx=dx/L*22; dy=dy/L*22;
+    ctx.strokeStyle=t[1]; ctx.lineWidth=2; ctx.beginPath();ctx.moveTo(ox,oy);ctx.lineTo(ox+dx,oy+dy);ctx.stroke();
+    ctx.fillStyle=t[1]; ctx.font='9px monospace'; ctx.textAlign='left'; ctx.fillText(t[0],ox+dx+1,oy+dy); });
+  ctx.fillStyle='#56627a'; ctx.font='10px monospace'; ctx.textAlign='left';
+  ctx.fillText('3D · 拖动旋转 · 视野'+ext.toFixed(2)+'m', 6, h-8);
+}
+function gesturePts(){ let upto=S.buf.length; if(S.replay) upto=Math.max(S.replay.i,2);
+  return S.buf.slice(0,upto).map(s=>[s.px,s.py,s.pz]); }
+function walkPts(){ const W=S.walk; return (W.active&&W.pLive)? W.path.concat([W.pLive]) : W.path; }
+
+function renderLoop(){
+  // Advance replay
+  if(S.replay){
+    const now=performance.now()/1000;
+    const tElapsed=now - S.replay.t0;
+    let i=0; while(i<S.buf.length && (S.buf[i].t - S.replay.base) <= tElapsed) i++;
+    S.replay.i=i;
+    if(i>=S.buf.length){ S.replay=null; }
+  }
+  drawCube();
+  if(S.plane==='3D'){ draw3D(S.mode==='walk'? walkPts() : gesturePts()); }
+  else if(S.mode==='walk'){ drawWalkPath(); }
+  else { drawPath(); }
+  oriReadout.textContent = `α ${S.ori.a.toFixed(0)}° β ${S.ori.b.toFixed(0)}° γ ${S.ori.g.toFixed(0)}°`;
+  if(S.mode==='walk'){
+    const W=S.walk;
+    liveReadout.textContent =
+      `步行 PDR · 源 ${S.accelSrc} · ${W.active?'追踪中':'已停止'} · ${S.rateHz.toFixed(0)}Hz\n`+
+      `状态  ${W.inStance?'● 落地 (ZUPT)':'○ 摆动中'}\n`+
+      `跨步  ${W.steps} (≈${W.steps*2} 步)\n`+
+      `距离  ${W.dist.toFixed(2)} m   位置 [${W.p[0].toFixed(2)}, ${W.p[1].toFixed(2)}] m`;
+  } else {
+    liveReadout.textContent =
+      `采样 ${S.rateHz.toFixed(0)}Hz · 加速度源 ${S.accelSrc} · 录制 ${S.rawbuf.length}\n`+
+      `姿态  α=${S.ori.a.toFixed(1)}  β=${S.ori.b.toFixed(1)}  γ=${S.ori.g.toFixed(1)} (deg)\n`+
+      `速度  v=[${S.vel.map(x=>x.toFixed(2)).join(', ')}] m/s\n`+
+      `位置  p=[${S.pos.map(x=>x.toFixed(3)).join(', ')}] m  ${S.stillCount>6?'· 静止ZUPT':''}`;
+  }
+  requestAnimationFrame(renderLoop);
+}
+// Draw an empty canvas once even without permission granted
+renderLoop();
+</script>
+</body>
+</html>

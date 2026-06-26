@@ -1,0 +1,12 @@
+# Self-signed TLS cert for the local demo server — regenerated automatically by
+# serve_https.py on first run. Never commit the private key to a public repo.
+cert.pem
+key.pem
+
+# OS / Python junk
+.DS_Store
+__pycache__/
+*.pyc
+
+# Local archive produced for packaging
+*.zip
