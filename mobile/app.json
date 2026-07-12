@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "StrideSense XIAO",
+    "slug": "stridesense-xiao",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "bundleIdentifier": "com.stridesense.xiao",
+      "infoPlist": {
+        "NSBluetoothAlwaysUsageDescription": "StrideSense connects to the XIAO foot IMU to track gait and motion.",
+        "NSBluetoothPeripheralUsageDescription": "StrideSense connects to the XIAO foot IMU to track gait and motion."
+      }
+    },
+    "android": {
+      "package": "com.stridesense.xiao",
+      "permissions": [
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ]
+    },
+    "plugins": [
+      "expo-dev-client",
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "modes": [
+            "peripheral",
+            "central"
+          ],
+          "bluetoothAlwaysPermission": "StrideSense connects to the XIAO foot IMU to track gait and motion."
+        }
+      ]
+    ]
+  }
+}

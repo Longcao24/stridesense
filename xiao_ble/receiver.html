@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>XIAO BLE IMU Receiver</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:#10151f;color:#eef3ff;padding:18px;}
+  h1{margin-top:0;font-size:1.6rem;}
+  button{font-size:1rem;padding:10px 14px;margin:4px 0;border:none;border-radius:10px;background:#4cc2ff;color:#06202e;cursor:pointer;}
+  button:disabled{opacity:.45;cursor:default;}
+  .card{background:#17212e;border:1px solid #2f3b52;border-radius:16px;padding:16px;margin:12px 0;}
+  .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;}
+  .row label{flex:1 1 160px;}
+  .readout{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap;margin-top:12px;color:#d9e6ff;}
+  .hint{font-size:0.92rem;color:#9ab2d6;}
+</style>
+</head>
+<body>
+<h1>XIAO BLE IMU Receiver</h1>
+<div class="card">
+  <div class="row">
+    <button id="btnConnect">Connect</button>
+    <button id="btnDisconnect" disabled>Disconnect</button>
+    <button id="btnDownloadJson" disabled>Download JSON</button>
+    <button id="btnDownloadCsv" disabled>Download CSV</button>
+  </div>
+  <div class="hint">Open this page from a secure origin. For development, use <code>https://localhost:8443/xiao_ble/receiver.html</code> from the repo server.</div>
+  <div class="readout" id="status">Status: idle</div>
+</div>
+<div class="card">
+  <div class="row"><label>Device:</label><span id="deviceName">—</span></div>
+  <div class="row"><label>Packets received:</label><span id="packetCount">0</span></div>
+  <div class="row"><label>Last sample age:</label><span id="age">—</span></div>
+  <div class="row"><label>Last accel (m/s²):</label><span id="accel">—</span></div>
+  <div class="row"><label>Last gyro (deg/s):</label><span id="gyro">—</span></div>
+  <div class="row"><label>Last quaternion:</label><span id="quat">—</span></div>
+</div>
+<script>
+const SERVICE_UUID = '12345678-1234-5678-1234-56789abcdef0';
+const CHAR_UUID = '12345678-1234-5678-1234-56789abcdef1';
+
+const btnConnect = document.getElementById('btnConnect');
+const btnDisconnect = document.getElementById('btnDisconnect');
+const btnDownloadJson = document.getElementById('btnDownloadJson');
+const btnDownloadCsv = document.getElementById('btnDownloadCsv');
+const statusEl = document.getElementById('status');
+const deviceNameEl = document.getElementById('deviceName');
+const packetCountEl = document.getElementById('packetCount');
+const ageEl = document.getElementById('age');
+const accelEl = document.getElementById('accel');
+const gyroEl = document.getElementById('gyro');
+const quatEl = document.getElementById('quat');
+
+let device = null;
+let characteristic = null;
+let packetCount = 0;
+let lastTimestamp = 0;
+const samples = [];
+let sampleTimer = null;
+
+function setStatus(text) {
+  statusEl.textContent = 'Status: ' + text;
+}
+
+function formatFloat(v, digits=2) {
+  return v.toFixed(digits);
+}
+
+function updateButtons(connected) {
+  btnConnect.disabled = connected;
+  btnDisconnect.disabled = !connected;
+  btnDownloadJson.disabled = samples.length === 0;
+  btnDownloadCsv.disabled = samples.length === 0;
+}
+
+function parsePacket(value) {
+  if (!(value instanceof DataView)) value = new DataView(value.buffer);
+  const t = value.getUint32(0, true);
+  const ax = value.getInt16(4, true) / 1000;
+  const ay = value.getInt16(6, true) / 1000;
+  const az = value.getInt16(8, true) / 1000;
+  const gx = value.getInt16(10, true) / 100.0;
+  const gy = value.getInt16(12, true) / 100.0;
+  const gz = value.getInt16(14, true) / 100.0;
+  const qw = value.getInt16(16, true) / 16384;
+  const qx = value.getInt16(18, true) / 16384;
+  const qy = value.getInt16(20, true) / 16384;
+  const qz = value.getInt16(22, true) / 16384;
+  return { timestamp_ms: t, ax, ay, az, gx, gy, gz, qw, qx, qy, qz };
+}
+
+function onNotification(event) {
+  const packet = parsePacket(event.target.value);
+  packetCount += 1;
+  lastTimestamp = packet.timestamp_ms;
+  samples.push(packet);
+  packetCountEl.textContent = packetCount;
+  accelEl.textContent = [packet.ax, packet.ay, packet.az].map(v => formatFloat(v, 2)).join(', ');
+  gyroEl.textContent = [packet.gx, packet.gy, packet.gz].map(v => formatFloat(v, 1)).join(', ');
+  quatEl.textContent = [packet.qw, packet.qx, packet.qy, packet.qz].map(v => formatFloat(v, 3)).join(', ');
+  updateButtons(true);
+}
+
+function refreshAge() {
+  if (!lastTimestamp) return;
+  const ageMs = Date.now() - lastTimestamp;
+  ageEl.textContent = ageMs < 1000 ? ageMs + ' ms' : Math.round(ageMs / 1000) + ' s';
+}
+
+async function connect() {
+  try {
+    setStatus('requesting device...');
+    device = await navigator.bluetooth.requestDevice({ filters: [{ services: [SERVICE_UUID] }] });
+    deviceNameEl.textContent = device.name || 'Unnamed';
+    setStatus('connecting...');
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE_UUID);
+    characteristic = await service.getCharacteristic(CHAR_UUID);
+    await characteristic.startNotifications();
+    characteristic.addEventListener('characteristicvaluechanged', onNotification);
+    setStatus('connected');
+    updateButtons(true);
+    sampleTimer = setInterval(refreshAge, 250);
+    device.addEventListener('gattserverdisconnected', disconnect);
+  } catch (error) {
+    setStatus('error: ' + error.message);
+    console.error(error);
+  }
+}
+
+function disconnect() {
+  if (sampleTimer) {
+    clearInterval(sampleTimer);
+    sampleTimer = null;
+  }
+  if (device && device.gatt.connected) {
+    device.gatt.disconnect();
+  }
+  device = null;
+  characteristic = null;
+  setStatus('disconnected');
+  updateButtons(false);
+}
+
+function download(filename, mimeType, text) {
+  const blob = new Blob([text], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function downloadJson() {
+  const payload = { meta: { source: 'xiao_ble', service: SERVICE_UUID, characteristic: CHAR_UUID, packetCount: samples.length }, samples };
+  download('xiao_ble_imu.json', 'application/json', JSON.stringify(payload, null, 2));
+}
+
+function downloadCsv() {
+  const header = 'timestamp_ms,ax,ay,az,gx,gy,gz,qw,qx,qy,qz\n';
+  const rows = samples.map(s => [s.timestamp_ms, s.ax, s.ay, s.az, s.gx, s.gy, s.gz, s.qw, s.qx, s.qy, s.qz].join(',')).join('\n');
+  download('xiao_ble_imu.csv', 'text/csv', header + rows);
+}
+
+btnConnect.addEventListener('click', connect);
+btnDisconnect.addEventListener('click', disconnect);
+btnDownloadJson.addEventListener('click', downloadJson);
+btnDownloadCsv.addEventListener('click', downloadCsv);
+updateButtons(false);
+setStatus('ready');
+</script>
+</body>
+</html>

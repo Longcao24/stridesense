@@ -23,6 +23,10 @@ add('用陀螺仪 + 加速度计实时复现「旋转姿态」与「空中画圈
 add('⚠️ 当前不是安全上下文(HTTPS / localhost)。iOS 不会弹出传感器授权,请用 README 里的 HTTPS 方式打开。',
     '⚠️ Not a secure context (HTTPS / localhost). iOS will not prompt for sensor access — open this page over HTTPS as described in the README.')
 add('① 授权并启动传感器', '① Grant &amp; start sensors')
+add('② 连接 XIAO BLE IMU', '② Connect XIAO BLE IMU')
+add('Cloudflare upload URL, optional: https://your-worker.workers.dev/upload',
+    'Cloudflare upload URL, optional: https://your-worker.workers.dev/upload')
+add('保存云端', 'Save cloud')
 
 # ---------- mode / control buttons ----------
 add('✍️ 手势模式', '✍️ Gesture mode')
@@ -113,13 +117,27 @@ add('传感器已启动 ✓ 摇一摇 / 转一转看看左图是否响应。',
     'Sensors started ✓ Shake / rotate the phone to see the left view respond.')
 add('devicemotion(无)', 'devicemotion (none)')
 add('deviceorientation(无)', 'deviceorientation (none)')
+add('XIAO BLE(无)', 'XIAO BLE (none)')
+add('校准中 ', 'calibrating ')
+add('已校准', 'calibrated')
+add('待校准', 'needs calibration')
 add('采样≈', 'rate≈')
+add('当前浏览器不支持 Web Bluetooth。', 'This browser does not support Web Bluetooth.')
+add('断开 BLE IMU', 'Disconnect BLE IMU')
+add('XIAO BLE 已连接 ✓ 可以校准并开始采集。', 'XIAO BLE connected ✓ Calibrate and start collecting.')
+add('首次使用 XIAO:请把模块固定并静置,然后点「② 校准」。',
+    'First XIAO use: mount the module, keep it still, then tap "② Calibrate".')
+add('BLE 连接失败:', 'BLE connection failed: ')
+add('云端上传地址已保存。', 'Cloud upload URL saved.')
+add('已清空云端上传地址,将使用本地 /upload。', 'Cloud upload URL cleared; local /upload will be used.')
 
 # ---------- JS: calibration ----------
 add('传感器还没数据,先点①授权并启动。', 'No sensor data yet — tap ① Grant & start first.')
 add('请先停止录制再校准。', 'Stop recording before calibrating.')
 add('请先停止步行追踪再校准。', 'Stop walk tracking before calibrating.')
-add('校准中…请保持手机静止 1.5 秒', 'Calibrating… keep the phone still for 1.5 s')
+add('XIAO 校准命令发送失败:', 'Failed to send XIAO calibration command: ')
+add('校准中…请保持传感器静止 ', 'Calibrating… keep the sensor still for ')
+add(' 秒', ' s')
 add('校准样本太少,请重试(确认①已启动)。', 'Too few calibration samples — try again (make sure ① is started).')
 add('校准完成 ✓ 重力 |g|=', 'Calibrated ✓ gravity |g|=')
 add(' m/s²。现在可「开始录制」并在空中画手势。', ' m/s². Now Start recording and draw a gesture in the air.')
@@ -142,8 +160,8 @@ add('已清空。', 'Cleared.')
 # ---------- JS: gesture upload ----------
 add('还没有可上传的轨迹,先录制一段(2~4 秒)。', 'No path to upload yet — record a segment first (2–4 s).')
 add('上传中…', 'Uploading…')
-add('已上传到电脑 ✓ <b>uploads/', 'Uploaded to computer ✓ <b>uploads/')
-add('</b> —— 现在可以让 Claude 分析了', '</b> —— ready for analysis')
+add('已上传 ✓ <b>', 'Uploaded ✓ <b>')
+add('</b> —— 现在可以分析了', '</b> —— ready for analysis')
 add('上传失败 HTTP ', 'Upload failed HTTP ')
 add('(确认服务器是支持上传的新版)', ' (make sure the server supports uploads)')
 add('上传失败:', 'Upload failed: ')
@@ -161,8 +179,7 @@ add(' 步),距离 <b>', ' steps), distance <b>')
 add('</b> m。下方为步态分析。', '</b> m. Gait analysis below.')
 add('路径已清空。', 'Path cleared.')
 add('还没有足够的步态数据,先走几步。', 'Not enough gait data yet — take a few steps.')
-add('已上传 ✓ <b>uploads/', 'Uploaded ✓ <b>uploads/')
-add('</b> — 可让 Claude 分析步态了', '</b> — gait data ready for analysis')
+add('</b> — 可分析步态了', '</b> — gait data ready for analysis')
 
 # ---------- JS: gait panel ----------
 add('CV采集中', 'CV collecting')

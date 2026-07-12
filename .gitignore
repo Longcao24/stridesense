@@ -10,3 +10,6 @@ __pycache__/
 
 # Local archive produced for packaging
 *.zip
+
+# Wrangler local state
+.wrangler/

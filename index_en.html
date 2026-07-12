@@ -26,6 +26,8 @@
   button.good{background:var(--good); color:#04210d; border-color:var(--good);}
   button.bad{background:transparent; color:var(--bad); border-color:#5a2a2a;}
   button:disabled{opacity:.4; pointer-events:none;}
+  input[type=url]{width:100%; border:1px solid var(--line); background:var(--panel2); color:var(--txt);
+    border-radius:10px; padding:10px 12px; font-size:13px;}
   button.toggle.on{background:var(--accent); color:#06202e; border-color:var(--accent);}
   .modeBtn.on{background:var(--accent); color:#06202e; border-color:var(--accent); font-weight:700;}
   .gaitgrid{display:grid; grid-template-columns:auto 1fr; gap:3px 12px; font-size:12.5px; align-items:baseline; font-variant-numeric:tabular-nums;}
@@ -62,8 +64,13 @@
   </div>
   <div class="row">
     <button class="primary" id="btnPermit">① Grant &amp; start sensors</button>
+    <button class="primary" id="btnBleConnect" style="min-width:170px;">② Connect XIAO BLE IMU</button>
   </div>
   <div class="status" id="permStatus" style="margin-top:8px;"></div>
+  <div class="row" style="margin-top:8px;">
+    <input id="cloudUploadUrl" type="url" placeholder="Cloudflare upload URL, optional: https://your-worker.workers.dev/upload">
+    <button id="btnSaveCloudUrl" style="min-width:120px;flex:0 0 auto;">Save cloud</button>
+  </div>
 </div>
 
 <div class="card">
@@ -230,6 +237,8 @@ const S = {
   mode:'gesture',                    // 'gesture' | 'walk'
   walk:{ active:false, v:[0,0,0], p:[0,0,0], pLive:[0,0,0], path:[[0,0,0]], swing:[],
          inStance:true, stanceCount:0, moveCount:0, steps:0, dist:0 },
+  ble:{ connected:false, device:null, char:null, cmd:null, lastTs:0, packetCount:0,
+        calibrated:false, calibrating:false, calSamples:0, calNeed:0 },
   params:{gain:1.0, leak:1.2, zupt:0.30, hp:0.02, smooth:2, detrend:true, closed:false,
           walkAccTh:2.0, walkGyroTh:40, walkN:4},
   replay:null,
@@ -243,6 +252,18 @@ function matVec(R,v){ // 3x3 row-major * vec3
 }
 function mag3(v){ return Math.hypot(v[0],v[1],v[2]); }
 const DEG = Math.PI/180;
+const BLE_SERVICE_UUID = '12345678-1234-5678-1234-56789abcdef0';
+const BLE_CHAR_UUID = '12345678-1234-5678-1234-56789abcdef1';
+const BLE_CMD_UUID = '12345678-1234-5678-1234-56789abcdef2';
+const cloudUploadUrlEl = document.getElementById('cloudUploadUrl');
+cloudUploadUrlEl.value = localStorage.getItem('cloudUploadUrl') || '';
+document.getElementById('btnSaveCloudUrl').addEventListener('click', ()=>{
+  localStorage.setItem('cloudUploadUrl', cloudUploadUrlEl.value.trim());
+  recStatus.textContent = cloudUploadUrlEl.value.trim() ? 'Cloud upload URL saved.' : 'Cloud upload URL cleared; local /upload will be used.';
+});
+function uploadUrl(){
+  return (localStorage.getItem('cloudUploadUrl') || '').trim() || '/upload';
+}
 
 // W3C deviceorientation (alpha=Z, beta=X', gamma=Y'') -> device->world rotation matrix
 // formula consistent with full-tilt.js
@@ -257,13 +278,195 @@ function eulerToMatrix(alphaDeg, betaDeg, gammaDeg){
   ];
 }
 
+function quatToMatrix(qw,qx,qy,qz){
+  const xx = qx*qx, yy = qy*qy, zz = qz*qz;
+  const xy = qx*qy, xz = qx*qz, yz = qy*qz;
+  const wx = qw*qx, wy = qw*qy, wz = qw*qz;
+  return [
+    1 - 2*(yy + zz),    2*(xy - wz),     2*(xz + wy),
+    2*(xy + wz),        1 - 2*(xx + zz), 2*(yz - wx),
+    2*(xz - wy),        2*(yz + wx),     1 - 2*(xx + yy)
+  ];
+}
+function matrixToEulerZXY(R){
+  const b = Math.asin(Math.max(-1, Math.min(1, R[7])));
+  const cB = Math.cos(b);
+  let a = 0, g = 0;
+  if(Math.abs(cB) > 1e-6){
+    a = Math.atan2(-R[1], R[4]);
+    g = Math.atan2(-R[6], R[8]);
+  } else {
+    a = Math.atan2(R[2], R[0]);
+    g = 0;
+  }
+  return { a:a/DEG, b:b/DEG, g:g/DEG };
+}
+
+function processImuFrame({aDev, R, ori, rotRateMag, now, accelSrc, userAccel}){
+  const t = (typeof now==='number') ? now : performance.now()/1000;
+  S.hasMotion = true;
+  if(R) S.R = R;
+  if(ori){ S.ori = ori; S.hasOrient = true; }
+  if(rotRateMag!=null) S.rotRateMag = rotRateMag;
+
+  let dt = S.lastT ? (t - S.lastT) : 0.016;
+  S.lastT = t;
+  if(dt <= 0 || dt > 0.2) dt = 0.016;
+  S.dtEMA = S.dtEMA*0.9 + dt*0.1;
+  S.rateHz = 1/Math.max(S.dtEMA, 1e-3);
+  S.nSamp++;
+
+  const aWorld = matVec(S.R, aDev);
+  if(S.calibrating){ S.calibBuf.push(aWorld.slice()); return; }
+  if(!S.calibrated) return;
+
+  let aLin;
+  if(userAccel && userAccel.x!=null && userAccel.y!=null && userAccel.z!=null && isFinite(userAccel.x+userAccel.y+userAccel.z)){
+    aLin = matVec(S.R, [userAccel.x*S.unitScale, userAccel.y*S.unitScale, userAccel.z*S.unitScale]);
+    S.accelSrc = accelSrc || 'userAccel (fused)';
+  } else {
+    aLin = [ aWorld[0]-S.gWorld[0], aWorld[1]-S.gWorld[1], aWorld[2]-S.gWorld[2] ];
+    S.accelSrc = accelSrc || 'manual −gravity';
+  }
+
+  if(S.mode==='walk'){
+    if(S.walk.active) walkStep(aLin, mag3(aWorld), dt, t);
+    return;
+  }
+
+  const k = S.params.hp;
+  S.bias = [ S.bias[0]+(aLin[0]-S.bias[0])*k,
+             S.bias[1]+(aLin[1]-S.bias[1])*k,
+             S.bias[2]+(aLin[2]-S.bias[2])*k ];
+  const aHP = [ aLin[0]-S.bias[0], aLin[1]-S.bias[1], aLin[2]-S.bias[2] ];
+
+  const aMag = mag3(aHP);
+  const still = (aMag < S.params.zupt) && (mag3(S.vel) < 0.15) && (S.rotRateMag < 12);
+  if(still) S.stillCount++; else S.stillCount=0;
+
+  const gain = S.params.gain;
+  for(let i=0;i<3;i++) S.vel[i] += aHP[i]*dt*gain;
+
+  if(S.stillCount > 6){
+    S.vel=[0,0,0];
+  }else{
+    const decay = Math.max(0, 1 - S.params.leak*dt);
+    for(let i=0;i<3;i++) S.vel[i]*=decay;
+  }
+
+  for(let i=0;i<3;i++) S.pos[i] += S.vel[i]*dt;
+
+  if(S.recording){
+    S.rawbuf.push({ t:t, dt:dt, aw:[aLin[0],aLin[1],aLin[2]],
+                    a:+S.ori.a.toFixed(2), b:+S.ori.b.toFixed(2), g:+S.ori.g.toFixed(2) });
+    S.buf.push({
+      t:+(t.toFixed(4)),
+      a:+S.ori.a.toFixed(2), b:+S.ori.b.toFixed(2), g:+S.ori.g.toFixed(2),
+      ax:+aLin[0].toFixed(4), ay:+aLin[1].toFixed(4), az:+aLin[2].toFixed(4),
+      vx:+S.vel[0].toFixed(4), vy:+S.vel[1].toFixed(4), vz:+S.vel[2].toFixed(4),
+      px:+S.pos[0].toFixed(5), py:+S.pos[1].toFixed(5), pz:+S.pos[2].toFixed(5)
+    });
+  }
+}
+
 // ---------- Secure context check ----------
 function isSecure(){ return window.isSecureContext === true; }
 
 // ---------- Permission & startup ----------
 const permStatus = document.getElementById('permStatus');
 const secWarn = document.getElementById('secWarn');
+const btnBleConnect = document.getElementById('btnBleConnect');
 if(!isSecure()) secWarn.style.display='block';
+
+btnBleConnect.addEventListener('click', ()=>{
+  if(S.ble.connected) disconnectBle(); else connectBle();
+});
+
+async function connectBle(){
+  if(!navigator.bluetooth){
+    permStatus.innerHTML = '<span style="color:var(--bad)">This browser does not support Web Bluetooth.</span>';
+    return;
+  }
+  try{
+    const device = await navigator.bluetooth.requestDevice({ filters:[{ services:[BLE_SERVICE_UUID] }] });
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(BLE_SERVICE_UUID);
+    const characteristic = await service.getCharacteristic(BLE_CHAR_UUID);
+    let commandCharacteristic = null;
+    try{ commandCharacteristic = await service.getCharacteristic(BLE_CMD_UUID); }catch(_){}
+    await characteristic.startNotifications();
+    characteristic.addEventListener('characteristicvaluechanged', onBleNotification);
+    S.ble.connected = true;
+    S.ble.device = device;
+    S.ble.char = characteristic;
+    S.ble.cmd = commandCharacteristic;
+    S.ble.packetCount = 0;
+    device.addEventListener('gattserverdisconnected', disconnectBle);
+    btnBleConnect.textContent = 'Disconnect BLE IMU';
+    document.getElementById('btnRec').disabled=false;
+    document.getElementById('btnWalk').disabled=false;
+    permStatus.innerHTML='XIAO BLE connected ✓ Calibrate and start collecting.';
+    if(!localStorage.getItem('xiaoBleCalibrated')){
+      recStatus.textContent='First XIAO use: mount the module, keep it still, then tap "② Calibrate".';
+    }
+    updatePermStatus();
+  }catch(e){
+    permStatus.innerHTML = '<span style="color:var(--bad)">BLE connection failed: '+e.message+'</span>';
+  }
+}
+function disconnectBle(){
+  if(S.ble.connected && S.ble.device && S.ble.device.gatt && S.ble.device.gatt.connected){
+    S.ble.device.gatt.disconnect();
+  }
+  S.ble.connected = false;
+  S.ble.device = null;
+  S.ble.char = null;
+  S.ble.cmd = null;
+  S.ble.packetCount = 0;
+  S.ble.calibrated = false;
+  S.ble.calibrating = false;
+  btnBleConnect.textContent = '② Connect XIAO BLE IMU';
+  updatePermStatus();
+}
+async function sendBleCommand(text){
+  if(!S.ble.cmd) return false;
+  const data = new TextEncoder().encode(text);
+  await S.ble.cmd.writeValue(data);
+  return true;
+}
+function onBleNotification(event){
+  const dv = event.target.value;
+  const timestampMs = dv.getUint32(0, true);
+  const ax = dv.getInt16(4, true) / 1000;
+  const ay = dv.getInt16(6, true) / 1000;
+  const az = dv.getInt16(8, true) / 1000;
+  const gx = dv.getInt16(10, true) / 100.0;
+  const gy = dv.getInt16(12, true) / 100.0;
+  const gz = dv.getInt16(14, true) / 100.0;
+  const qw = dv.getInt16(16, true) / 16384;
+  const qx = dv.getInt16(18, true) / 16384;
+  const qy = dv.getInt16(20, true) / 16384;
+  const qz = dv.getInt16(22, true) / 16384;
+  if(dv.byteLength >= 30){
+    S.ble.calibrated = !!dv.getUint8(24);
+    S.ble.calibrating = !!dv.getUint8(25);
+    S.ble.calSamples = dv.getUint16(26, true);
+    S.ble.calNeed = dv.getUint16(28, true);
+    if(S.ble.calibrated) localStorage.setItem('xiaoBleCalibrated', '1');
+  }
+  S.ble.packetCount++;
+  S.ble.lastTs = timestampMs;
+  const R = quatToMatrix(qw, qx, qy, qz);
+  const ori = matrixToEulerZXY(R);
+  processImuFrame({
+    aDev:[ax, ay, az],
+    R, ori,
+    rotRateMag:Math.hypot(gx, gy, gz),
+    now:performance.now()/1000,
+    accelSrc:'XIAO BLE',
+    userAccel:null
+  });
+}
 
 document.getElementById('btnPermit').addEventListener('click', async ()=>{
   if(!isSecure()){
@@ -301,7 +504,12 @@ function startSensors(){
 function updatePermStatus(){
   const m = S.hasMotion ? '<span class="dot ok"></span>devicemotion' : '<span class="dot no"></span>devicemotion (none)';
   const o = S.hasOrient ? '<span class="dot ok"></span>deviceorientation' : '<span class="dot no"></span>deviceorientation (none)';
-  permStatus.innerHTML = m+' &nbsp; '+o+' &nbsp; rate≈<b>'+S.rateHz.toFixed(0)+'Hz</b>';
+  let b = '<span class="dot no"></span>XIAO BLE (none)';
+  if(S.ble.connected){
+    const cal = S.ble.calibrating ? 'calibrating '+S.ble.calSamples+'/'+S.ble.calNeed : (S.ble.calibrated ? 'calibrated' : 'needs calibration');
+    b = '<span class="dot ok"></span>XIAO BLE('+cal+')';
+  }
+  permStatus.innerHTML = m+' &nbsp; '+o+' &nbsp; '+b+' &nbsp; rate≈<b>'+S.rateHz.toFixed(0)+'Hz</b>';
 }
 setInterval(()=>{ if(S.hasMotion||S.hasOrient) updatePermStatus(); }, 1000);
 
@@ -315,105 +523,35 @@ function onOrient(e){
 
 function onMotion(e){
   const g = e.accelerationIncludingGravity;
-  // Drop the whole frame if any axis is missing (null/undefined) or non-finite, to avoid fake acceleration from substituting 0
   if(!g || g.x==null || g.y==null || g.z==null || !isFinite(g.x+g.y+g.z)) return;
-  S.hasMotion=true;
-
-  // dt
-  let dt = (e.interval && e.interval>0) ? e.interval : null;
-  const now = performance.now()/1000;
-  if(dt===null){ dt = S.lastT ? (now - S.lastT) : 0.016; }
-  S.lastT = now;
-  if(dt<=0 || dt>0.2) dt = 0.016;            // fault tolerance
-  S.dtEMA = S.dtEMA*0.9 + dt*0.1;
-  S.rateHz = 1/Math.max(S.dtEMA,1e-3);
-  S.nSamp++;
-
-  // Rotation rate magnitude (deg/s) used for stillness detection
   if(e.rotationRate){
     S.rotRateMag = Math.hypot(e.rotationRate.alpha||0, e.rotationRate.beta||0, e.rotationRate.gamma||0);
   }
-
-  // Device-frame acceleration with gravity -> world frame
   const aDev = [ (g.x||0)*S.unitScale, (g.y||0)*S.unitScale, (g.z||0)*S.unitScale ];
-  const aWorld = matVec(S.R, aDev);
-
-  // Calibration: collect world-frame acceleration with gravity; its average is the world-frame gravity vector
-  if(S.calibrating){
-    S.calibBuf.push(aWorld.slice());
-    return;
-  }
-  if(!S.calibrated) return;
-
-  // ---- Linear acceleration (world frame, gravity removed) ----
-  // Prefer iOS CoreMotion's fused userAcceleration: it fuses gyro+accel to directly give gravity-free linear accel,
-  // far more accurate than "manually subtracting calibrated gravity" (a 1° orientation error only rotates this small vector by 1°, whereas manual gravity subtraction leaves a ~0.17 m/s² constant drift).
-  // Only fall back to manual gravity subtraction when this field is unavailable (some Android devices).
-  let aLin;
-  const ua = e.acceleration;
-  if(ua && ua.x!=null && ua.y!=null && ua.z!=null && isFinite(ua.x+ua.y+ua.z)){
-    aLin = matVec(S.R, [ ua.x*S.unitScale, ua.y*S.unitScale, ua.z*S.unitScale ]);
-    S.accelSrc='userAccel (fused)';
-  }else{
-    aLin = [ aWorld[0]-S.gWorld[0], aWorld[1]-S.gWorld[1], aWorld[2]-S.gWorld[2] ];
-    S.accelSrc='manual −gravity';
-  }
-
-  // Walk mode: foot-mounted PDR, ZUPT de-drift on each foot landing (fully separate from gesture mode)
-  if(S.mode==='walk'){
-    if(S.walk.active) walkStep(aLin, mag3(aWorld), dt, now);
-    return;
-  }
-
-  // High-pass to remove slow bias (world frame)
-  const k = S.params.hp;
-  S.bias = [ S.bias[0]+(aLin[0]-S.bias[0])*k,
-             S.bias[1]+(aLin[1]-S.bias[1])*k,
-             S.bias[2]+(aLin[2]-S.bias[2])*k ];
-  const aHP = [ aLin[0]-S.bias[0], aLin[1]-S.bias[1], aLin[2]-S.bias[2] ];
-
-  // Stillness detection: use the high-passed aHP consistently with the integrator; also require small estimated velocity and slow rotation
-  const aMag = mag3(aHP);
-  const still = (aMag < S.params.zupt) && (mag3(S.vel) < 0.15) && (S.rotRateMag < 12);
-  if(still) S.stillCount++; else S.stillCount=0;
-
-  // Integrate: acceleration -> velocity
-  const gain = S.params.gain;
-  for(let i=0;i<3;i++) S.vel[i] += aHP[i]*dt*gain;
-
-  // ZUPT: sustained stillness -> zero out velocity; otherwise velocity leak
-  if(S.stillCount > 6){
-    S.vel=[0,0,0];
-  }else{
-    const decay = Math.max(0, 1 - S.params.leak*dt);
-    for(let i=0;i<3;i++) S.vel[i]*=decay;
-  }
-
-  // Integrate: velocity -> position (accumulate position only while recording; also update otherwise for live preview)
-  for(let i=0;i<3;i++) S.pos[i] += S.vel[i]*dt;
-
-  if(S.recording){
-    // Store raw world-frame linear accel (for batch reconstruction after stop); also store a causal preview point for live display
-    S.rawbuf.push({ t:now, dt:dt, aw:[aLin[0],aLin[1],aLin[2]],
-                    a:+S.ori.a.toFixed(2), b:+S.ori.b.toFixed(2), g:+S.ori.g.toFixed(2) });
-    S.buf.push({
-      t:+(now.toFixed(4)),
-      a:+S.ori.a.toFixed(2), b:+S.ori.b.toFixed(2), g:+S.ori.g.toFixed(2),
-      ax:+aLin[0].toFixed(4), ay:+aLin[1].toFixed(4), az:+aLin[2].toFixed(4),
-      vx:+S.vel[0].toFixed(4), vy:+S.vel[1].toFixed(4), vz:+S.vel[2].toFixed(4),
-      px:+S.pos[0].toFixed(5), py:+S.pos[1].toFixed(5), pz:+S.pos[2].toFixed(5)
-    });
-  }
+  const now = performance.now()/1000;
+  processImuFrame({
+    aDev,
+    R:S.R,
+    ori:S.ori,
+    rotRateMag:S.rotRateMag,
+    now,
+    accelSrc:'native',
+    userAccel:e.acceleration
+  });
 }
 
 // ---------- Calibration ----------
 const recStatus = document.getElementById('recStatus');
-document.getElementById('btnCalib').addEventListener('click', ()=>{
+document.getElementById('btnCalib').addEventListener('click', async ()=>{
   if(!S.hasMotion){ recStatus.textContent='No sensor data yet — tap ① Grant & start first.'; return; }
   if(S.recording){ recStatus.textContent='Stop recording before calibrating.'; return; }
   if(S.walk.active){ recStatus.textContent='Stop walk tracking before calibrating.'; return; }
+  // Note: no BLE command is sent here. The XIAO firmware auto-calibrates its
+  // gyro bias whenever the pod is stationary (host->device GATT writes kill
+  // the link on some macOS hosts, so the firmware no longer relies on them).
   S.unitScale=1; S.calibrating=true; S.calibBuf=[]; S.calibrated=false; // Must reset the unit first, otherwise repeated calibration leaks the previous scale
-  recStatus.innerHTML='<span style="color:var(--warn)">Calibrating… keep the phone still for 1.5 s</span>';
+  const calibMs = S.ble.connected ? 2800 : 1500;
+  recStatus.innerHTML='<span style="color:var(--warn)">Calibrating… keep the sensor still for '+(calibMs/1000).toFixed(1)+' s</span>';
   setTimeout(()=>{
     S.calibrating=false;
     if(S.calibBuf.length<5){ recStatus.textContent='Too few calibration samples — try again (make sure ① is started).'; return; }
@@ -430,6 +568,7 @@ document.getElementById('btnCalib').addEventListener('click', ()=>{
     S.gWorld = [ m[0]*S.unitScale, m[1]*S.unitScale, m[2]*S.unitScale ];
     S.bias=[0,0,0]; S.vel=[0,0,0]; S.pos=[0,0,0]; S.stillCount=0;
     S.calibrated=true;
+    if(S.ble.connected) localStorage.setItem('xiaoBleCalibrated', '1');
     // After re-calibration, discard the previous recorded trajectory and disable downstream actions (consistent with "Clear")
     S.rawbuf=[]; S.buf=[]; S.replay=null;
     document.getElementById('btnReplay').disabled=true;
@@ -437,7 +576,7 @@ document.getElementById('btnCalib').addEventListener('click', ()=>{
     document.getElementById('btnExportCsv').disabled=true;
     document.getElementById('btnRebuild').disabled=true;
     recStatus.innerHTML='Calibrated ✓ gravity |g|='+mag3(S.gWorld).toFixed(2)+' m/s². Now Start recording and draw a gesture in the air.';
-  }, 1500);
+  }, calibMs);
 });
 
 // ---------- Batch reconstruction after stop (core: de-drift using "still at start and end" boundary constraints) ----------
@@ -610,10 +749,10 @@ document.getElementById('btnUpload').addEventListener('click', async ()=>{
   };
   recStatus.textContent='Uploading…';
   try{
-    const res = await fetch('/upload', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+    const res = await fetch(uploadUrl(), { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
     const txt = await res.text();
     recStatus.innerHTML = res.ok
-      ? ('Uploaded to computer ✓ <b>uploads/'+txt+'</b> —— ready for analysis')
+      ? ('Uploaded ✓ <b>'+txt+'</b> —— ready for analysis')
       : ('Upload failed HTTP '+res.status+' (make sure the server supports uploads)');
   }catch(e){ recStatus.innerHTML='Upload failed: '+e.message; }
 });
@@ -650,9 +789,9 @@ document.getElementById('btnWalkUpload').addEventListener('click', async ()=>{
     summary:computeGait(), strides:S.walk.strides, path:S.walk.path };
   recStatus.textContent='Uploading…';
   try{
-    const res=await fetch('/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const res=await fetch(uploadUrl(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const txt=await res.text();
-    recStatus.innerHTML=res.ok? ('Uploaded ✓ <b>uploads/'+txt+'</b> — gait data ready for analysis') : ('Upload failed HTTP '+res.status);
+    recStatus.innerHTML=res.ok? ('Uploaded ✓ <b>'+txt+'</b> — gait data ready for analysis') : ('Upload failed HTTP '+res.status);
   }catch(e){ recStatus.innerHTML='Upload failed: '+e.message; }
 });
 

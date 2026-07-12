@@ -1,0 +1,11 @@
+name = "phone-motion-tracker-upload"
+main = "cloudflare/worker.js"
+compatibility_date = "2026-07-09"
+
+kv_namespaces = [
+  { binding = "MOTION_UPLOADS", id = "37e1c5efbbff485ca82511aaab34264c" }
+]
+
+[observability]
+enabled = true
+
